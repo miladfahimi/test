@@ -12,12 +12,14 @@ CTrade trade;
 input double MaxMarginUsagePercent = 20.0;
 input bool   OnePositionPerSymbol  = true;
 input bool   DrawWeeklyLines       = true;
+input double RescueTargetUsd       = 10.0;
 
 //----------------------------------------------------
 // Button names
 //----------------------------------------------------
 string BTN_BUY  = "MILAD_BTN_BUY_AUTO";
 string BTN_SELL = "MILAD_BTN_SELL_AUTO";
+string BTN_RESCUE = "MILAD_BTN_RESCUE";
 
 //----------------------------------------------------
 // Weekly line prefixes
@@ -255,11 +257,12 @@ void CreateControlPanel()
 {
    CreateButton(BTN_BUY,  "AUTO BUY",  15, 30, clrSeaGreen);
    CreateButton(BTN_SELL, "AUTO SELL", 145, 30, clrFireBrick);
+   CreateButton(BTN_RESCUE, "RESCUE $10", 275, 30, clrDarkOrange);
 }
 
 void EnsureControlPanel()
 {
-   if(ObjectFind(0, BTN_BUY) < 0 || ObjectFind(0, BTN_SELL) < 0)
+   if(ObjectFind(0, BTN_BUY) < 0 || ObjectFind(0, BTN_SELL) < 0 || ObjectFind(0, BTN_RESCUE) < 0)
       CreateControlPanel();
 }
 
@@ -267,6 +270,7 @@ void DeleteControlPanel()
 {
    ObjectDelete(0, BTN_BUY);
    ObjectDelete(0, BTN_SELL);
+   ObjectDelete(0, BTN_RESCUE);
 }
 
 //----------------------------------------------------
@@ -385,6 +389,154 @@ void OpenAutoTrade(bool isBuy)
          " TP=", tpPrice);
 }
 
+double ComputePriceDeltaForMoney(string symbol, double totalVolume, double targetMoney)
+{
+   if(totalVolume <= 0.0 || targetMoney <= 0.0)
+      return 0.0;
+
+   double tickSize = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
+   if(tickSize <= 0.0)
+      tickSize = SymbolInfoDouble(symbol, SYMBOL_POINT);
+
+   double tickValueProfit = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE_PROFIT);
+   double tickValueLoss   = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE_LOSS);
+   double tickValue = 0.0;
+
+   if(tickValueProfit > 0.0 && tickValueLoss > 0.0)
+      tickValue = (tickValueProfit + tickValueLoss) / 2.0;
+   else if(tickValueProfit > 0.0)
+      tickValue = tickValueProfit;
+   else
+      tickValue = tickValueLoss;
+
+   if(tickSize <= 0.0 || tickValue <= 0.0)
+      return 0.0;
+
+   return (targetMoney * tickSize) / (tickValue * totalVolume);
+}
+
+bool ApplyRescueForSide(string symbol,
+                        ENUM_POSITION_TYPE side,
+                        double weightedEntry,
+                        double totalVolume,
+                        ulong &tickets[])
+{
+   double delta = ComputePriceDeltaForMoney(symbol, totalVolume, RescueTargetUsd);
+   if(delta <= 0.0)
+   {
+      Print("RESCUE failed: could not compute price delta for ", symbol, " side=", (int)side);
+      return false;
+   }
+
+   int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+   double tpPrice = 0.0;
+   double slPrice = 0.0;
+
+   if(side == POSITION_TYPE_BUY)
+   {
+      tpPrice = NormalizeDouble(weightedEntry + delta, digits);
+      slPrice = NormalizeDouble(weightedEntry - delta, digits);
+   }
+   else
+   {
+      tpPrice = NormalizeDouble(weightedEntry - delta, digits);
+      slPrice = NormalizeDouble(weightedEntry + delta, digits);
+   }
+
+   bool allOk = true;
+   for(int i = 0; i < ArraySize(tickets); i++)
+   {
+      ulong ticket = tickets[i];
+      if(!trade.PositionModify(ticket, slPrice, tpPrice))
+      {
+         allOk = false;
+         Print("RESCUE modify failed. ticket=", ticket,
+               " retcode=", trade.ResultRetcode(),
+               " desc=", trade.ResultRetcodeDescription());
+      }
+   }
+
+   Print("RESCUE applied on ", symbol,
+         " side=", (side == POSITION_TYPE_BUY ? "BUY" : "SELL"),
+         " target=$", DoubleToString(RescueTargetUsd, 2),
+         " totalVolume=", totalVolume,
+         " entry=", weightedEntry,
+         " SL=", slPrice,
+         " TP=", tpPrice,
+         " tickets=", ArraySize(tickets));
+
+   return allOk;
+}
+
+void ApplyRescueMode()
+{
+   string symbol = _Symbol;
+
+   double buyVolume = 0.0;
+   double sellVolume = 0.0;
+   double buyWeightedPriceSum = 0.0;
+   double sellWeightedPriceSum = 0.0;
+   ulong buyTickets[];
+   ulong sellTickets[];
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+      if(!PositionSelectByTicket(ticket)) continue;
+
+      if(PositionGetString(POSITION_SYMBOL) != symbol)
+         continue;
+
+      ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      double volume = PositionGetDouble(POSITION_VOLUME);
+      double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+
+      if(posType == POSITION_TYPE_BUY)
+      {
+         buyVolume += volume;
+         buyWeightedPriceSum += entry * volume;
+         int buySize = ArraySize(buyTickets);
+         ArrayResize(buyTickets, buySize + 1);
+         buyTickets[buySize] = ticket;
+      }
+      else if(posType == POSITION_TYPE_SELL)
+      {
+         sellVolume += volume;
+         sellWeightedPriceSum += entry * volume;
+         int sellSize = ArraySize(sellTickets);
+         ArrayResize(sellTickets, sellSize + 1);
+         sellTickets[sellSize] = ticket;
+      }
+   }
+
+   if(buyVolume <= 0.0 && sellVolume <= 0.0)
+   {
+      Print("RESCUE skipped: no open positions for ", symbol);
+      return;
+   }
+
+   bool ok = true;
+   if(buyVolume > 0.0)
+   {
+      double buyEntry = buyWeightedPriceSum / buyVolume;
+      if(!ApplyRescueForSide(symbol, POSITION_TYPE_BUY, buyEntry, buyVolume, buyTickets))
+         ok = false;
+   }
+
+   if(sellVolume > 0.0)
+   {
+      double sellEntry = sellWeightedPriceSum / sellVolume;
+      if(!ApplyRescueForSide(symbol, POSITION_TYPE_SELL, sellEntry, sellVolume, sellTickets))
+         ok = false;
+   }
+
+   if(ok)
+      Print("RESCUE mode completed for ", symbol);
+   else
+      Print("RESCUE mode completed with errors for ", symbol);
+}
+
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
 //+------------------------------------------------------------------+
@@ -434,6 +586,11 @@ void OnChartEvent(const int id,
       {
          Print("AUTO SELL clicked");
          OpenAutoTrade(false);
+      }
+      else if(sparam == BTN_RESCUE)
+      {
+         Print("RESCUE clicked");
+         ApplyRescueMode();
       }
    }
 }
