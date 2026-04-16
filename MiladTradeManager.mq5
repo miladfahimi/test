@@ -28,7 +28,6 @@ input bool   OnePositionPerSymbol       = true;
 input bool   UseCurrentChartSymbol      = true;
 
 input bool   EnableWeeklyLevels         = true;
-input double EntryZoneUSD               = 50.0;
 input double WeeklyTPPullbackUSD        = 50.0;
 
 //----------------------------------------------------
@@ -36,9 +35,6 @@ input double WeeklyTPPullbackUSD        = 50.0;
 //----------------------------------------------------
 string BTN_BUY  = "MILAD_BTN_BUY_AUTO";
 string BTN_SELL = "MILAD_BTN_SELL_AUTO";
-string CHK_ENTRY_ZONE = "MILAD_CHK_ENTRY_ZONE";
-
-bool EntryZoneCheckEnabled = true;
 
 //----------------------------------------------------
 // Weekly line prefixes
@@ -98,24 +94,27 @@ bool SymbolHasOpenPosition(string symbol)
 //----------------------------------------------------
 // Persistent partial-close state
 //----------------------------------------------------
-string PartialCloseKey(ulong ticket)
+string PartialCloseStageKey(ulong ticket)
 {
-   return "MILAD_PARTIAL_DONE_" + (string)ticket;
+   return "MILAD_PARTIAL_STAGE_" + (string)ticket;
 }
 
-bool IsPartialCloseDone(ulong ticket)
+int GetPartialCloseStage(ulong ticket)
 {
-   return GlobalVariableCheck(PartialCloseKey(ticket));
+   string key = PartialCloseStageKey(ticket);
+   if(!GlobalVariableCheck(key))
+      return 0;
+   return (int)GlobalVariableGet(key);
 }
 
-void MarkPartialCloseDone(ulong ticket)
+void SetPartialCloseStage(ulong ticket, int stage)
 {
-   GlobalVariableSet(PartialCloseKey(ticket), (double)TimeCurrent());
+   GlobalVariableSet(PartialCloseStageKey(ticket), (double)stage);
 }
 
 void ClearPartialCloseFlag(ulong ticket)
 {
-   string key = PartialCloseKey(ticket);
+   string key = PartialCloseStageKey(ticket);
    if(GlobalVariableCheck(key))
       GlobalVariableDel(key);
 }
@@ -300,31 +299,6 @@ int GetWeeklyLevels(string symbol, double &levels[])
    levels[9] = extDn2;
 
    return 10;
-}
-
-bool IsNearWeeklyLevel(string symbol, ENUM_ORDER_TYPE orderType, double volume)
-{
-   double currentPrice = (orderType == ORDER_TYPE_BUY)
-                         ? SymbolInfoDouble(symbol, SYMBOL_ASK)
-                         : SymbolInfoDouble(symbol, SYMBOL_BID);
-
-   double levels[];
-   int count = GetWeeklyLevels(symbol, levels);
-   if(count <= 0)
-      return false;
-
-   for(int i = 0; i < count; i++)
-   {
-      double pnl = 0.0;
-
-      if(!OrderCalcProfit(orderType, symbol, volume, currentPrice, levels[i], pnl))
-         continue;
-
-      if(MathAbs(pnl) <= EntryZoneUSD)
-         return true;
-   }
-
-   return false;
 }
 
 bool FindNearestWeeklyOppositeLevel(string symbol,
@@ -518,52 +492,16 @@ bool CreateButton(const string name, const string text, int x, int y, color bg)
    return true;
 }
 
-void UpdateEntryZoneCheckbox()
-{
-   string text = EntryZoneCheckEnabled ? "[x] ENTRY ZONE" : "[ ] ENTRY ZONE";
-   ObjectSetString(0, CHK_ENTRY_ZONE, OBJPROP_TEXT, text);
-}
-
-bool CreateEntryZoneCheckbox(int x, int y)
-{
-   if(ObjectFind(0, CHK_ENTRY_ZONE) >= 0)
-      ObjectDelete(0, CHK_ENTRY_ZONE);
-
-   if(!ObjectCreate(0, CHK_ENTRY_ZONE, OBJ_BUTTON, 0, 0, 0))
-   {
-      Print("Failed to create checkbox: ", CHK_ENTRY_ZONE, " error=", GetLastError());
-      return false;
-   }
-
-   ObjectSetInteger(0, CHK_ENTRY_ZONE, OBJPROP_XDISTANCE, x);
-   ObjectSetInteger(0, CHK_ENTRY_ZONE, OBJPROP_YDISTANCE, y);
-   ObjectSetInteger(0, CHK_ENTRY_ZONE, OBJPROP_XSIZE, 250);
-   ObjectSetInteger(0, CHK_ENTRY_ZONE, OBJPROP_YSIZE, 24);
-   ObjectSetInteger(0, CHK_ENTRY_ZONE, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-   ObjectSetInteger(0, CHK_ENTRY_ZONE, OBJPROP_FONTSIZE, 10);
-   ObjectSetInteger(0, CHK_ENTRY_ZONE, OBJPROP_COLOR, clrWhite);
-   ObjectSetInteger(0, CHK_ENTRY_ZONE, OBJPROP_BGCOLOR, clrDimGray);
-   ObjectSetInteger(0, CHK_ENTRY_ZONE, OBJPROP_BORDER_COLOR, clrBlack);
-   ObjectSetInteger(0, CHK_ENTRY_ZONE, OBJPROP_HIDDEN, true);
-   ObjectSetInteger(0, CHK_ENTRY_ZONE, OBJPROP_SELECTABLE, false);
-   ObjectSetInteger(0, CHK_ENTRY_ZONE, OBJPROP_STATE, false);
-
-   UpdateEntryZoneCheckbox();
-   return true;
-}
-
 void CreateControlPanel()
 {
    CreateButton(BTN_BUY,  "BUY AUTO",  15, 30, clrSeaGreen);
    CreateButton(BTN_SELL, "SELL AUTO", 145, 30, clrFireBrick);
-   CreateEntryZoneCheckbox(15, 65);
 }
 
 void DeleteControlPanel()
 {
    ObjectDelete(0, BTN_BUY);
    ObjectDelete(0, BTN_SELL);
-   ObjectDelete(0, CHK_ENTRY_ZONE);
 }
 
 //----------------------------------------------------
@@ -617,24 +555,35 @@ void DrawWeeklyLevels()
 //----------------------------------------------------
 // Partial close and TP extension
 //----------------------------------------------------
-bool TryPartialCloseAndExtendTP(ulong ticket, string symbol, double currentSL)
+double GetStagePriceLevel(ENUM_POSITION_TYPE posType, double openPrice, double tpPrice, double ratio)
+{
+   return openPrice + ((tpPrice - openPrice) * ratio);
+}
+
+bool IsPriceAtOrBeyondLevel(ENUM_POSITION_TYPE posType, double marketPrice, double levelPrice)
+{
+   if(posType == POSITION_TYPE_BUY)
+      return (marketPrice >= levelPrice);
+   return (marketPrice <= levelPrice);
+}
+
+double GetProgressTrailingDistance(double openPrice, double tpPrice)
+{
+   return MathAbs(tpPrice - openPrice) * 0.5;
+}
+
+bool TryPartialCloseByStage(ulong ticket, string symbol, int stage)
 {
    if(!PositionSelectByTicket(ticket))
       return false;
 
-   if(IsPartialCloseDone(ticket))
-      return false;
-
-   ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-   double volume              = PositionGetDouble(POSITION_VOLUME);
-   double openPrice           = PositionGetDouble(POSITION_PRICE_OPEN);
-
+   double volume = PositionGetDouble(POSITION_VOLUME);
    double closeVolume = NormalizeVolumeBySymbol(symbol, volume * (PartialClosePercent / 100.0));
-   double minLot      = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+   double minLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
 
    if(closeVolume < minLot || closeVolume <= 0.0)
    {
-      MarkPartialCloseDone(ticket);
+      SetPartialCloseStage(ticket, stage);
       return false;
    }
 
@@ -647,17 +596,7 @@ bool TryPartialCloseAndExtendTP(ulong ticket, string symbol, double currentSL)
       return false;
    }
 
-   MarkPartialCloseDone(ticket);
-   Sleep(500);
-
-   if(!PositionSelectByTicket(ticket))
-      return true;
-
-   double remainingVolume = PositionGetDouble(POSITION_VOLUME);
-   double newTPProfitUSD  = GetEquity() * (StopLossPercent / 100.0);
-   double newTPPrice      = FindPriceForTargetProfit(symbol, posType, remainingVolume, openPrice, newTPProfitUSD);
-
-   SafeModifyPosition(ticket, symbol, currentSL, newTPPrice);
+   SetPartialCloseStage(ticket, stage);
    return true;
 }
 
@@ -685,14 +624,6 @@ void OpenAutoTrade(bool isBuy)
       Print("Could not calculate a valid volume for ", symbol);
       return;
    }
-
-   if(EntryZoneCheckEnabled && !IsNearWeeklyLevel(symbol, orderType, volume))
-   {
-      Print("Entry blocked: price is not within weekly level zone");
-      return;
-   }
-
-   double weeklySlBufferUsd = 50.0;
 
    ENUM_POSITION_TYPE plannedPosType = isBuy ? POSITION_TYPE_BUY : POSITION_TYPE_SELL;
    double currentPrice = (plannedPosType == POSITION_TYPE_BUY)
@@ -733,10 +664,18 @@ void OpenAutoTrade(bool isBuy)
       double posVolume           = PositionGetDouble(POSITION_VOLUME);
       double openPrice           = PositionGetDouble(POSITION_PRICE_OPEN);
 
-      double slPrice = ComputeWeeklyBasedStopLoss(symbol, posType, posVolume, openPrice, weeklySlBufferUsd);
+      double slPrice = 0.0;
+      double tpPrice = 0.0;
+
+      double nearestOppLevel = 0.0;
+      if(FindNearestWeeklyOppositeLevel(symbol, posType, openPrice, nearestOppLevel))
+         slPrice = nearestOppLevel;
       if(slPrice <= 0.0)
          slPrice = FindPriceForTargetProfit(symbol, posType, posVolume, openPrice, -(equity * (StopLossPercent / 100.0)));
-      double tpPrice = ComputeWeeklyBasedTakeProfit(symbol, posType, posVolume, openPrice, WeeklyTPPullbackUSD);
+
+      double nearestTargetLevel = 0.0;
+      if(FindNearestWeeklyTargetLevel(symbol, posType, openPrice, nearestTargetLevel))
+         tpPrice = nearestTargetLevel;
       if(tpPrice <= 0.0)
          tpPrice = FindPriceForTargetProfit(symbol, posType, posVolume, openPrice, (equity * (StopLossPercent / 100.0)));
 
@@ -747,8 +686,8 @@ void OpenAutoTrade(bool isBuy)
             " symbol=", symbol,
             " volume=", posVolume,
             " equity=", equity,
-            " TP_mode=weekly_next_line_dynamic_pullback",
-            " SL_mode=weekly_level_plus_buffer",
+            " TP_mode=nearest_weekly_direction_level",
+            " SL_mode=nearest_weekly_opposite_level",
             " maxMarginMoney=", maxMarginMoney);
       return;
    }
@@ -773,20 +712,40 @@ void ManageOnePosition(ulong ticket)
    double currentProfit       = PositionGetDouble(POSITION_PROFIT);
    double currentSL           = PositionGetDouble(POSITION_SL);
    double currentTP           = PositionGetDouble(POSITION_TP);
+   int partialStage           = GetPartialCloseStage(ticket);
 
    double equity             = GetEquity();
    double stopLossUsd        = equity * (StopLossPercent / 100.0);
    double triggerProfitUsd   = ProfitLockTriggerUSD;
-   double partialTriggerUsd  = ProfitLockTriggerUSD;
    double trailingStartUsd   = TrailingStartUSD;
    double rescueTriggerUsd   = -(stopLossUsd * 0.5);
 
-   double initialSLPrice = FindPriceForTargetProfit(symbol, posType, volume, openPrice, -stopLossUsd);
-   double initialTPPrice = ComputeWeeklyBasedTakeProfit(symbol, posType, volume, openPrice, WeeklyTPPullbackUSD);
+   double initialSLPrice = currentSL;
+   if(initialSLPrice == 0.0)
+   {
+      double nearestOppLevel = 0.0;
+      if(FindNearestWeeklyOppositeLevel(symbol, posType, openPrice, nearestOppLevel))
+         initialSLPrice = nearestOppLevel;
+   }
+   if(initialSLPrice <= 0.0)
+      initialSLPrice = FindPriceForTargetProfit(symbol, posType, volume, openPrice, -stopLossUsd);
+   double initialTPPrice = currentTP;
+   if(initialTPPrice == 0.0)
+   {
+      double nearestTargetLevel = 0.0;
+      if(FindNearestWeeklyTargetLevel(symbol, posType, openPrice, nearestTargetLevel))
+         initialTPPrice = nearestTargetLevel;
+   }
    if(initialTPPrice <= 0.0)
       initialTPPrice = FindPriceForTargetProfit(symbol, posType, volume, openPrice, stopLossUsd);
    double lockedSLPrice  = FindPriceForTargetProfit(symbol, posType, volume, openPrice,  LockedProfitUSD);
-   double rescueTPPrice  = ComputeWeeklyBasedTakeProfit(symbol, posType, volume, openPrice, WeeklyTPPullbackUSD);
+   double rescueTPPrice  = currentTP;
+   if(rescueTPPrice == 0.0)
+   {
+      double nearestTargetLevel = 0.0;
+      if(FindNearestWeeklyTargetLevel(symbol, posType, openPrice, nearestTargetLevel))
+         rescueTPPrice = nearestTargetLevel;
+   }
    if(rescueTPPrice <= 0.0)
       rescueTPPrice = currentTP;
 
@@ -804,10 +763,34 @@ void ManageOnePosition(ulong ticket)
       currentProfit = PositionGetDouble(POSITION_PROFIT);
    }
 
-   if(currentProfit >= partialTriggerUsd && !IsPartialCloseDone(ticket))
+   if(currentTP > 0.0)
    {
-      if(TryPartialCloseAndExtendTP(ticket, symbol, currentSL))
-         return;
+      double marketPrice = (posType == POSITION_TYPE_BUY)
+                           ? SymbolInfoDouble(symbol, SYMBOL_BID)
+                           : SymbolInfoDouble(symbol, SYMBOL_ASK);
+      double level30 = GetStagePriceLevel(posType, openPrice, currentTP, 0.30);
+      double level50 = GetStagePriceLevel(posType, openPrice, currentTP, 0.50);
+
+      if(partialStage < 1 && IsPriceAtOrBeyondLevel(posType, marketPrice, level30))
+      {
+         if(TryPartialCloseByStage(ticket, symbol, 1))
+            return;
+      }
+
+      if(partialStage < 2 && IsPriceAtOrBeyondLevel(posType, marketPrice, level50))
+      {
+         if(TryPartialCloseByStage(ticket, symbol, 2))
+         {
+            Sleep(300);
+            if(PositionSelectByTicket(ticket))
+            {
+               double remainingVolume = PositionGetDouble(POSITION_VOLUME);
+               double lockSlPrice = FindPriceForTargetProfit(symbol, posType, remainingVolume, openPrice, LockedProfitUSD);
+               SafeModifyPosition(ticket, symbol, lockSlPrice, currentTP);
+            }
+            return;
+         }
+      }
    }
 
    if(!PositionSelectByTicket(ticket))
@@ -821,9 +804,49 @@ void ManageOnePosition(ulong ticket)
    currentProfit = PositionGetDouble(POSITION_PROFIT);
 
    lockedSLPrice = FindPriceForTargetProfit(symbol, posType, volume, openPrice, LockedProfitUSD);
-   rescueTPPrice = ComputeWeeklyBasedTakeProfit(symbol, posType, volume, openPrice, WeeklyTPPullbackUSD);
+   rescueTPPrice = currentTP;
+   if(rescueTPPrice == 0.0)
+   {
+      double nearestTargetLevel = 0.0;
+      if(FindNearestWeeklyTargetLevel(symbol, posType, openPrice, nearestTargetLevel))
+         rescueTPPrice = nearestTargetLevel;
+   }
    if(rescueTPPrice <= 0.0)
       rescueTPPrice = currentTP;
+
+   if(currentTP > 0.0)
+   {
+      double marketPrice = (posType == POSITION_TYPE_BUY)
+                           ? SymbolInfoDouble(symbol, SYMBOL_BID)
+                           : SymbolInfoDouble(symbol, SYMBOL_ASK);
+      double level60 = GetStagePriceLevel(posType, openPrice, currentTP, 0.60);
+
+      if(IsPriceAtOrBeyondLevel(posType, marketPrice, level60))
+      {
+         double trailingDistance = GetProgressTrailingDistance(openPrice, currentTP);
+         if(trailingDistance > 0.0)
+         {
+            double trailSLPrice = (posType == POSITION_TYPE_BUY)
+                                  ? (marketPrice - trailingDistance)
+                                  : (marketPrice + trailingDistance);
+            bool shouldMoveSL = false;
+
+            if(posType == POSITION_TYPE_BUY)
+            {
+               if(currentSL == 0.0 || trailSLPrice > currentSL)
+                  shouldMoveSL = true;
+            }
+            else
+            {
+               if(currentSL == 0.0 || trailSLPrice < currentSL)
+                  shouldMoveSL = true;
+            }
+
+            if(shouldMoveSL)
+               SafeModifyPosition(ticket, symbol, trailSLPrice, currentTP);
+         }
+      }
+   }
 
    if(currentProfit >= trailingStartUsd)
    {
@@ -942,12 +965,6 @@ void OnChartEvent(const int id,
       {
          Print("SELL AUTO clicked");
          OpenAutoTrade(false);
-      }
-      else if(sparam == CHK_ENTRY_ZONE)
-      {
-         EntryZoneCheckEnabled = !EntryZoneCheckEnabled;
-         UpdateEntryZoneCheckbox();
-         Print("Entry zone check ", (EntryZoneCheckEnabled ? "enabled" : "disabled"));
       }
    }
 }
