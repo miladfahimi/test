@@ -1,34 +1,17 @@
 //+------------------------------------------------------------------+
 //|                                            MiladTradeManager.mq5 |
 //+------------------------------------------------------------------+
-#property version   "2.62"
+#property version   "3.00"
 
 #include <Trade/Trade.mqh>
 CTrade trade;
 
 //----------------------------------------------------
-// Inputs
+// Inputs (simplified)
 //----------------------------------------------------
-input double MaxMarginUsagePercent      = 25.0;
-input double TargetProfitPercent        = 1.0;
-input double StopLossPercent            = 1.0;
-
-input double ProfitLockTriggerUSD       = 100.0;
-input double LockedProfitUSD            = 10.0;
-
-input double NegativeTriggerUSD         = -30.0;
-input double RescueTakeProfitUSD        = 10.0;
-
-input double PartialClosePercent        = 50.0;
-
-input double TrailingStartUSD           = 200.0;
-input double TrailingDistanceUSD        = 50.0;
-
-input bool   OnePositionPerSymbol       = true;
-input bool   UseCurrentChartSymbol      = true;
-
-input bool   EnableWeeklyLevels         = true;
-input double WeeklyTPPullbackUSD        = 50.0;
+input double MaxMarginUsagePercent = 20.0;
+input bool   OnePositionPerSymbol  = true;
+input bool   DrawWeeklyLines       = true;
 
 //----------------------------------------------------
 // Button names
@@ -43,18 +26,8 @@ string W1_PREFIX_1 = "W1_LAST_";
 string W1_PREFIX_2 = "W1_PREV_";
 
 //----------------------------------------------------
-// Utility functions
+// Utility helpers
 //----------------------------------------------------
-bool NearlyEqual(double a, double b, double eps)
-{
-   return (MathAbs(a - b) <= eps);
-}
-
-double GetEquity()
-{
-   return AccountInfoDouble(ACCOUNT_EQUITY);
-}
-
 double NormalizeVolumeBySymbol(string symbol, double volume)
 {
    double minLot  = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
@@ -84,149 +57,12 @@ bool SymbolHasOpenPosition(string symbol)
       if(ticket <= 0) continue;
       if(!PositionSelectByTicket(ticket)) continue;
 
-      string psymbol = PositionGetString(POSITION_SYMBOL);
-      if(psymbol == symbol)
+      if(PositionGetString(POSITION_SYMBOL) == symbol)
          return true;
    }
    return false;
 }
 
-//----------------------------------------------------
-// Persistent partial-close state
-//----------------------------------------------------
-string PartialCloseStageKey(ulong ticket)
-{
-   return "MILAD_PARTIAL_STAGE_" + (string)ticket;
-}
-
-int GetPartialCloseStage(ulong ticket)
-{
-   string key = PartialCloseStageKey(ticket);
-   if(!GlobalVariableCheck(key))
-      return 0;
-   return (int)GlobalVariableGet(key);
-}
-
-void SetPartialCloseStage(ulong ticket, int stage)
-{
-   GlobalVariableSet(PartialCloseStageKey(ticket), (double)stage);
-}
-
-void ClearPartialCloseFlag(ulong ticket)
-{
-   string key = PartialCloseStageKey(ticket);
-   if(GlobalVariableCheck(key))
-      GlobalVariableDel(key);
-}
-
-//----------------------------------------------------
-// Find target price for a given profit/loss in account currency
-//----------------------------------------------------
-double FindPriceForTargetProfit(string symbol,
-                                ENUM_POSITION_TYPE posType,
-                                double volume,
-                                double openPrice,
-                                double targetProfitUSD)
-{
-   int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
-
-   if(MathAbs(targetProfitUSD) < 0.0000001)
-      return NormalizeDouble(openPrice, digits);
-
-   double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
-   if(point <= 0.0)
-      point = 0.00001;
-
-   ENUM_ORDER_TYPE orderType = (posType == POSITION_TYPE_BUY) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-
-   double step = 1000.0 * point;
-   double price = openPrice;
-   double profit = 0.0;
-
-   for(int i = 0; i < 20000; i++)
-   {
-      double nextPrice;
-
-      if(posType == POSITION_TYPE_BUY)
-         nextPrice = (targetProfitUSD > 0.0) ? price + step : price - step;
-      else
-         nextPrice = (targetProfitUSD > 0.0) ? price - step : price + step;
-
-      if(nextPrice <= 0.0)
-         break;
-
-      if(!OrderCalcProfit(orderType, symbol, volume, openPrice, nextPrice, profit))
-      {
-         Print("OrderCalcProfit failed for ", symbol, " error=", GetLastError());
-         return NormalizeDouble(openPrice, digits);
-      }
-
-      bool reached = false;
-      if(targetProfitUSD > 0.0 && profit >= targetProfitUSD)
-         reached = true;
-      if(targetProfitUSD < 0.0 && profit <= targetProfitUSD)
-         reached = true;
-
-      if(reached)
-      {
-         double low = price;
-         double high = nextPrice;
-
-         if(low > high)
-         {
-            double tmp = low;
-            low = high;
-            high = tmp;
-         }
-
-         for(int j = 0; j < 80; j++)
-         {
-            double mid = (low + high) / 2.0;
-            double midProfit = 0.0;
-
-            if(!OrderCalcProfit(orderType, symbol, volume, openPrice, mid, midProfit))
-               break;
-
-            if(targetProfitUSD > 0.0)
-            {
-               if(midProfit < targetProfitUSD)
-               {
-                  if(posType == POSITION_TYPE_BUY) low = mid;
-                  else                             high = mid;
-               }
-               else
-               {
-                  if(posType == POSITION_TYPE_BUY) high = mid;
-                  else                             low = mid;
-               }
-            }
-            else
-            {
-               if(midProfit > targetProfitUSD)
-               {
-                  if(posType == POSITION_TYPE_BUY) high = mid;
-                  else                             low = mid;
-               }
-               else
-               {
-                  if(posType == POSITION_TYPE_BUY) low = mid;
-                  else                             high = mid;
-               }
-            }
-         }
-
-         return NormalizeDouble((low + high) / 2.0, digits);
-      }
-
-      price = nextPrice;
-   }
-
-   return NormalizeDouble(openPrice, digits);
-}
-
-//----------------------------------------------------
-// Calculate max volume by margin cap
-//----------------------------------------------------
 double CalculateMaxVolumeForMargin(string symbol, ENUM_ORDER_TYPE orderType, double maxMarginMoney)
 {
    double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
@@ -248,10 +84,7 @@ double CalculateMaxVolumeForMargin(string symbol, ENUM_ORDER_TYPE orderType, dou
       double normLot = NormalizeVolumeBySymbol(symbol, lot);
 
       if(!OrderCalcMargin(orderType, symbol, normLot, price, margin))
-      {
-         Print("OrderCalcMargin failed for ", symbol, " lot=", normLot, " error=", GetLastError());
          continue;
-      }
 
       if(margin <= maxMarginMoney)
          bestLot = normLot;
@@ -385,84 +218,8 @@ bool FindNearestWeeklyTargetLevel(string symbol,
    return found;
 }
 
-double ComputeWeeklyBasedStopLoss(string symbol,
-                                  ENUM_POSITION_TYPE posType,
-                                  double volume,
-                                  double openPrice,
-                                  double bufferUsd)
-{
-   double nearestLevel = 0.0;
-   if(!FindNearestWeeklyOppositeLevel(symbol, posType, openPrice, nearestLevel))
-      return 0.0;
-
-   return FindPriceForTargetProfit(symbol, posType, volume, nearestLevel, -MathAbs(bufferUsd));
-}
-
-double ComputeWeeklyBasedTakeProfit(string symbol,
-                                    ENUM_POSITION_TYPE posType,
-                                    double volume,
-                                    double openPrice,
-                                    double pullbackUsd)
-{
-   double nearestTargetLevel = 0.0;
-   if(!FindNearestWeeklyTargetLevel(symbol, posType, openPrice, nearestTargetLevel))
-      return 0.0;
-
-   ENUM_ORDER_TYPE orderType = (posType == POSITION_TYPE_BUY) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-   double levelProfitUsd = 0.0;
-   if(!OrderCalcProfit(orderType, symbol, volume, openPrice, nearestTargetLevel, levelProfitUsd))
-      return nearestTargetLevel;
-
-   levelProfitUsd = MathAbs(levelProfitUsd);
-   if(levelProfitUsd <= 0.0)
-      return nearestTargetLevel;
-
-   double dynamicPullbackUsd = MathMin(MathAbs(pullbackUsd), levelProfitUsd * 0.5);
-   if(dynamicPullbackUsd <= 0.0)
-      return nearestTargetLevel;
-
-   double targetProfitUsd = levelProfitUsd - dynamicPullbackUsd;
-   if(targetProfitUsd <= 0.0)
-      return nearestTargetLevel;
-
-   return FindPriceForTargetProfit(symbol, posType, volume, openPrice, targetProfitUsd);
-}
-
 //----------------------------------------------------
-// Safe modify
-//----------------------------------------------------
-bool SafeModifyPosition(ulong ticket, string symbol, double newSL, double newTP)
-{
-   int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
-   double eps = SymbolInfoDouble(symbol, SYMBOL_POINT) * 2.0;
-
-   double oldSL = PositionGetDouble(POSITION_SL);
-   double oldTP = PositionGetDouble(POSITION_TP);
-
-   newSL = (newSL > 0.0) ? NormalizeDouble(newSL, digits) : 0.0;
-   newTP = (newTP > 0.0) ? NormalizeDouble(newTP, digits) : 0.0;
-
-   bool sameSL = NearlyEqual(oldSL, newSL, eps);
-   bool sameTP = NearlyEqual(oldTP, newTP, eps);
-
-   if(sameSL && sameTP)
-      return true;
-
-   bool ok = trade.PositionModify(ticket, newSL, newTP);
-   if(!ok)
-   {
-      Print("PositionModify failed. ticket=", ticket,
-            " symbol=", symbol,
-            " newSL=", newSL,
-            " newTP=", newTP,
-            " retcode=", trade.ResultRetcode(),
-            " desc=", trade.ResultRetcodeDescription());
-   }
-   return ok;
-}
-
-//----------------------------------------------------
-// Create button
+// Buttons
 //----------------------------------------------------
 bool CreateButton(const string name, const string text, int x, int y, color bg)
 {
@@ -485,8 +242,10 @@ bool CreateButton(const string name, const string text, int x, int y, color bg)
    ObjectSetInteger(0, name, OBJPROP_COLOR, clrWhite);
    ObjectSetInteger(0, name, OBJPROP_BGCOLOR, bg);
    ObjectSetInteger(0, name, OBJPROP_BORDER_COLOR, clrBlack);
-   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
-   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, false);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, true);
+   ObjectSetInteger(0, name, OBJPROP_BACK, false);
+   ObjectSetInteger(0, name, OBJPROP_ZORDER, 1000);
    ObjectSetInteger(0, name, OBJPROP_STATE, false);
 
    return true;
@@ -494,8 +253,14 @@ bool CreateButton(const string name, const string text, int x, int y, color bg)
 
 void CreateControlPanel()
 {
-   CreateButton(BTN_BUY,  "BUY AUTO",  15, 30, clrSeaGreen);
-   CreateButton(BTN_SELL, "SELL AUTO", 145, 30, clrFireBrick);
+   CreateButton(BTN_BUY,  "AUTO BUY",  15, 30, clrSeaGreen);
+   CreateButton(BTN_SELL, "AUTO SELL", 145, 30, clrFireBrick);
+}
+
+void EnsureControlPanel()
+{
+   if(ObjectFind(0, BTN_BUY) < 0 || ObjectFind(0, BTN_SELL) < 0)
+      CreateControlPanel();
 }
 
 void DeleteControlPanel()
@@ -519,7 +284,7 @@ void DrawLine(string name, double price, color clr)
 
 void DrawWeeklyLevels()
 {
-   if(!EnableWeeklyLevels) return;
+   if(!DrawWeeklyLines) return;
 
    string symbol = _Symbol;
 
@@ -553,55 +318,7 @@ void DrawWeeklyLevels()
 }
 
 //----------------------------------------------------
-// Partial close and TP extension
-//----------------------------------------------------
-double GetStagePriceLevel(ENUM_POSITION_TYPE posType, double openPrice, double tpPrice, double ratio)
-{
-   return openPrice + ((tpPrice - openPrice) * ratio);
-}
-
-bool IsPriceAtOrBeyondLevel(ENUM_POSITION_TYPE posType, double marketPrice, double levelPrice)
-{
-   if(posType == POSITION_TYPE_BUY)
-      return (marketPrice >= levelPrice);
-   return (marketPrice <= levelPrice);
-}
-
-double GetProgressTrailingDistance(double openPrice, double tpPrice)
-{
-   return MathAbs(tpPrice - openPrice) * 0.5;
-}
-
-bool TryPartialCloseByStage(ulong ticket, string symbol, int stage)
-{
-   if(!PositionSelectByTicket(ticket))
-      return false;
-
-   double volume = PositionGetDouble(POSITION_VOLUME);
-   double closeVolume = NormalizeVolumeBySymbol(symbol, volume * (PartialClosePercent / 100.0));
-   double minLot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
-
-   if(closeVolume < minLot || closeVolume <= 0.0)
-   {
-      SetPartialCloseStage(ticket, stage);
-      return false;
-   }
-
-   bool ok = trade.PositionClosePartial(ticket, closeVolume);
-   if(!ok)
-   {
-      Print("PositionClosePartial failed. ticket=", ticket,
-            " retcode=", trade.ResultRetcode(),
-            " desc=", trade.ResultRetcodeDescription());
-      return false;
-   }
-
-   SetPartialCloseStage(ticket, stage);
-   return true;
-}
-
-//----------------------------------------------------
-// Open trade
+// Open trade (simple)
 //----------------------------------------------------
 void OpenAutoTrade(bool isBuy)
 {
@@ -613,34 +330,45 @@ void OpenAutoTrade(bool isBuy)
       return;
    }
 
-   double equity = GetEquity();
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
    double maxMarginMoney = equity * (MaxMarginUsagePercent / 100.0);
 
    ENUM_ORDER_TYPE orderType = isBuy ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-   double volume = CalculateMaxVolumeForMargin(symbol, orderType, maxMarginMoney);
+   ENUM_POSITION_TYPE posType = isBuy ? POSITION_TYPE_BUY : POSITION_TYPE_SELL;
 
+   double volume = CalculateMaxVolumeForMargin(symbol, orderType, maxMarginMoney);
    if(volume <= 0.0)
    {
       Print("Could not calculate a valid volume for ", symbol);
       return;
    }
 
-   ENUM_POSITION_TYPE plannedPosType = isBuy ? POSITION_TYPE_BUY : POSITION_TYPE_SELL;
-   double currentPrice = (plannedPosType == POSITION_TYPE_BUY)
-                         ? SymbolInfoDouble(symbol, SYMBOL_ASK)
-                         : SymbolInfoDouble(symbol, SYMBOL_BID);
-   double nearestOppositeLevel = 0.0;
-   if(!FindNearestWeeklyOppositeLevel(symbol, plannedPosType, currentPrice, nearestOppositeLevel))
+   double openRefPrice = isBuy ? SymbolInfoDouble(symbol, SYMBOL_ASK) : SymbolInfoDouble(symbol, SYMBOL_BID);
+
+   double slPrice = 0.0;
+   double tpPrice = 0.0;
+
+   if(!FindNearestWeeklyOppositeLevel(symbol, posType, openRefPrice, slPrice))
    {
-      Print("Entry blocked: no weekly level found on opposite side for stop loss placement");
+      Print("Entry blocked: could not find previous weekly level for stop loss.");
       return;
    }
 
+   if(!FindNearestWeeklyTargetLevel(symbol, posType, openRefPrice, tpPrice))
+   {
+      Print("Entry blocked: could not find next weekly level for take profit.");
+      return;
+   }
+
+   int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+   slPrice = NormalizeDouble(slPrice, digits);
+   tpPrice = NormalizeDouble(tpPrice, digits);
+
    bool sent = false;
    if(isBuy)
-      sent = trade.Buy(volume, symbol, 0.0, 0.0, 0.0, "Milad Auto Buy");
+      sent = trade.Buy(volume, symbol, 0.0, slPrice, tpPrice, "Milad Auto Buy");
    else
-      sent = trade.Sell(volume, symbol, 0.0, 0.0, 0.0, "Milad Auto Sell");
+      sent = trade.Sell(volume, symbol, 0.0, slPrice, tpPrice, "Milad Auto Sell");
 
    if(!sent)
    {
@@ -649,266 +377,12 @@ void OpenAutoTrade(bool isBuy)
       return;
    }
 
-   Sleep(500);
-
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket <= 0) continue;
-      if(!PositionSelectByTicket(ticket)) continue;
-
-      string psymbol = PositionGetString(POSITION_SYMBOL);
-      if(psymbol != symbol) continue;
-
-      ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-      double posVolume           = PositionGetDouble(POSITION_VOLUME);
-      double openPrice           = PositionGetDouble(POSITION_PRICE_OPEN);
-
-      double slPrice = 0.0;
-      double tpPrice = 0.0;
-
-      double nearestOppLevel = 0.0;
-      if(FindNearestWeeklyOppositeLevel(symbol, posType, openPrice, nearestOppLevel))
-         slPrice = nearestOppLevel;
-      if(slPrice <= 0.0)
-         slPrice = FindPriceForTargetProfit(symbol, posType, posVolume, openPrice, -(equity * (StopLossPercent / 100.0)));
-
-      double nearestTargetLevel = 0.0;
-      if(FindNearestWeeklyTargetLevel(symbol, posType, openPrice, nearestTargetLevel))
-         tpPrice = nearestTargetLevel;
-      if(tpPrice <= 0.0)
-         tpPrice = FindPriceForTargetProfit(symbol, posType, posVolume, openPrice, (equity * (StopLossPercent / 100.0)));
-
-      SafeModifyPosition(ticket, symbol, slPrice, tpPrice);
-      ClearPartialCloseFlag(ticket);
-
-      Print("Opened ", (isBuy ? "BUY" : "SELL"),
-            " symbol=", symbol,
-            " volume=", posVolume,
-            " equity=", equity,
-            " TP_mode=nearest_weekly_direction_level",
-            " SL_mode=nearest_weekly_opposite_level",
-            " maxMarginMoney=", maxMarginMoney);
-      return;
-   }
-}
-
-//----------------------------------------------------
-// Manage position
-//----------------------------------------------------
-void ManageOnePosition(ulong ticket)
-{
-   if(!PositionSelectByTicket(ticket))
-      return;
-
-   string symbol = PositionGetString(POSITION_SYMBOL);
-
-   if(UseCurrentChartSymbol && symbol != _Symbol)
-      return;
-
-   ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-   double volume              = PositionGetDouble(POSITION_VOLUME);
-   double openPrice           = PositionGetDouble(POSITION_PRICE_OPEN);
-   double currentProfit       = PositionGetDouble(POSITION_PROFIT);
-   double currentSL           = PositionGetDouble(POSITION_SL);
-   double currentTP           = PositionGetDouble(POSITION_TP);
-   int partialStage           = GetPartialCloseStage(ticket);
-
-   double equity             = GetEquity();
-   double stopLossUsd        = equity * (StopLossPercent / 100.0);
-   double triggerProfitUsd   = ProfitLockTriggerUSD;
-   double trailingStartUsd   = TrailingStartUSD;
-   double rescueTriggerUsd   = -(stopLossUsd * 0.5);
-
-   double initialSLPrice = currentSL;
-   if(initialSLPrice == 0.0)
-   {
-      double nearestOppLevel = 0.0;
-      if(FindNearestWeeklyOppositeLevel(symbol, posType, openPrice, nearestOppLevel))
-         initialSLPrice = nearestOppLevel;
-   }
-   if(initialSLPrice <= 0.0)
-      initialSLPrice = FindPriceForTargetProfit(symbol, posType, volume, openPrice, -stopLossUsd);
-   double initialTPPrice = currentTP;
-   if(initialTPPrice == 0.0)
-   {
-      double nearestTargetLevel = 0.0;
-      if(FindNearestWeeklyTargetLevel(symbol, posType, openPrice, nearestTargetLevel))
-         initialTPPrice = nearestTargetLevel;
-   }
-   if(initialTPPrice <= 0.0)
-      initialTPPrice = FindPriceForTargetProfit(symbol, posType, volume, openPrice, stopLossUsd);
-   double lockedSLPrice  = FindPriceForTargetProfit(symbol, posType, volume, openPrice,  LockedProfitUSD);
-   double rescueTPPrice  = currentTP;
-   if(rescueTPPrice == 0.0)
-   {
-      double nearestTargetLevel = 0.0;
-      if(FindNearestWeeklyTargetLevel(symbol, posType, openPrice, nearestTargetLevel))
-         rescueTPPrice = nearestTargetLevel;
-   }
-   if(rescueTPPrice <= 0.0)
-      rescueTPPrice = currentTP;
-
-   if(currentSL == 0.0 || currentTP == 0.0)
-   {
-      double newSL = (currentSL == 0.0) ? initialSLPrice : currentSL;
-      double newTP = (currentTP == 0.0) ? initialTPPrice : currentTP;
-      SafeModifyPosition(ticket, symbol, newSL, newTP);
-
-      if(!PositionSelectByTicket(ticket))
-         return;
-
-      currentSL     = PositionGetDouble(POSITION_SL);
-      currentTP     = PositionGetDouble(POSITION_TP);
-      currentProfit = PositionGetDouble(POSITION_PROFIT);
-   }
-
-   if(currentTP > 0.0)
-   {
-      double marketPrice = (posType == POSITION_TYPE_BUY)
-                           ? SymbolInfoDouble(symbol, SYMBOL_BID)
-                           : SymbolInfoDouble(symbol, SYMBOL_ASK);
-      double level30 = GetStagePriceLevel(posType, openPrice, currentTP, 0.30);
-      double level50 = GetStagePriceLevel(posType, openPrice, currentTP, 0.50);
-
-      if(partialStage < 1 && IsPriceAtOrBeyondLevel(posType, marketPrice, level30))
-      {
-         if(TryPartialCloseByStage(ticket, symbol, 1))
-            return;
-      }
-
-      if(partialStage < 2 && IsPriceAtOrBeyondLevel(posType, marketPrice, level50))
-      {
-         if(TryPartialCloseByStage(ticket, symbol, 2))
-         {
-            Sleep(300);
-            if(PositionSelectByTicket(ticket))
-            {
-               double remainingVolume = PositionGetDouble(POSITION_VOLUME);
-               double lockSlPrice = FindPriceForTargetProfit(symbol, posType, remainingVolume, openPrice, LockedProfitUSD);
-               SafeModifyPosition(ticket, symbol, lockSlPrice, currentTP);
-            }
-            return;
-         }
-      }
-   }
-
-   if(!PositionSelectByTicket(ticket))
-      return;
-
-   posType       = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-   volume        = PositionGetDouble(POSITION_VOLUME);
-   openPrice     = PositionGetDouble(POSITION_PRICE_OPEN);
-   currentSL     = PositionGetDouble(POSITION_SL);
-   currentTP     = PositionGetDouble(POSITION_TP);
-   currentProfit = PositionGetDouble(POSITION_PROFIT);
-
-   lockedSLPrice = FindPriceForTargetProfit(symbol, posType, volume, openPrice, LockedProfitUSD);
-   rescueTPPrice = currentTP;
-   if(rescueTPPrice == 0.0)
-   {
-      double nearestTargetLevel = 0.0;
-      if(FindNearestWeeklyTargetLevel(symbol, posType, openPrice, nearestTargetLevel))
-         rescueTPPrice = nearestTargetLevel;
-   }
-   if(rescueTPPrice <= 0.0)
-      rescueTPPrice = currentTP;
-
-   if(currentTP > 0.0)
-   {
-      double marketPrice = (posType == POSITION_TYPE_BUY)
-                           ? SymbolInfoDouble(symbol, SYMBOL_BID)
-                           : SymbolInfoDouble(symbol, SYMBOL_ASK);
-      double level60 = GetStagePriceLevel(posType, openPrice, currentTP, 0.60);
-
-      if(IsPriceAtOrBeyondLevel(posType, marketPrice, level60))
-      {
-         double trailingDistance = GetProgressTrailingDistance(openPrice, currentTP);
-         if(trailingDistance > 0.0)
-         {
-            double trailSLPrice = (posType == POSITION_TYPE_BUY)
-                                  ? (marketPrice - trailingDistance)
-                                  : (marketPrice + trailingDistance);
-            bool shouldMoveSL = false;
-
-            if(posType == POSITION_TYPE_BUY)
-            {
-               if(currentSL == 0.0 || trailSLPrice > currentSL)
-                  shouldMoveSL = true;
-            }
-            else
-            {
-               if(currentSL == 0.0 || trailSLPrice < currentSL)
-                  shouldMoveSL = true;
-            }
-
-            if(shouldMoveSL)
-               SafeModifyPosition(ticket, symbol, trailSLPrice, currentTP);
-         }
-      }
-   }
-
-   if(currentProfit >= trailingStartUsd)
-   {
-      double trailLockedProfitUsd = currentProfit - TrailingDistanceUSD;
-
-      if(trailLockedProfitUsd > LockedProfitUSD)
-      {
-         double trailSLPrice = FindPriceForTargetProfit(symbol, posType, volume, openPrice, trailLockedProfitUsd);
-         bool shouldMoveSL = false;
-
-         if(posType == POSITION_TYPE_BUY)
-         {
-            if(currentSL == 0.0 || trailSLPrice > currentSL)
-               shouldMoveSL = true;
-         }
-         else
-         {
-            if(currentSL == 0.0 || trailSLPrice < currentSL)
-               shouldMoveSL = true;
-         }
-
-         if(shouldMoveSL)
-            SafeModifyPosition(ticket, symbol, trailSLPrice, currentTP);
-      }
-   }
-   else if(currentProfit >= triggerProfitUsd)
-   {
-      bool shouldMoveSL = false;
-
-      if(posType == POSITION_TYPE_BUY)
-      {
-         if(currentSL == 0.0 || lockedSLPrice > currentSL)
-            shouldMoveSL = true;
-      }
-      else
-      {
-         if(currentSL == 0.0 || lockedSLPrice < currentSL)
-            shouldMoveSL = true;
-      }
-
-      if(shouldMoveSL)
-         SafeModifyPosition(ticket, symbol, lockedSLPrice, currentTP);
-   }
-
-   if(currentProfit <= rescueTriggerUsd)
-   {
-      bool shouldMoveTP = false;
-
-      if(posType == POSITION_TYPE_BUY)
-      {
-         if(currentTP == 0.0 || rescueTPPrice < currentTP)
-            shouldMoveTP = true;
-      }
-      else
-      {
-         if(currentTP == 0.0 || rescueTPPrice > currentTP)
-            shouldMoveTP = true;
-      }
-
-      if(shouldMoveTP)
-         SafeModifyPosition(ticket, symbol, currentSL, rescueTPPrice);
-   }
+   Print("Opened ", (isBuy ? "BUY" : "SELL"),
+         " symbol=", symbol,
+         " volume=", volume,
+         " maxMarginUsagePercent=", MaxMarginUsagePercent,
+         " SL=", slPrice,
+         " TP=", tpPrice);
 }
 
 //+------------------------------------------------------------------+
@@ -918,7 +392,8 @@ int OnInit()
 {
    CreateControlPanel();
    DrawWeeklyLevels();
-   Print("MiladTradeManager v2.60 initialized on symbol ", _Symbol);
+   ChartRedraw(0);
+   Print("MiladTradeManager v3.00 initialized on symbol ", _Symbol);
    return(INIT_SUCCEEDED);
 }
 
@@ -936,14 +411,8 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
+   EnsureControlPanel();
    DrawWeeklyLevels();
-
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket > 0)
-         ManageOnePosition(ticket);
-   }
 }
 
 //+------------------------------------------------------------------+
@@ -958,12 +427,12 @@ void OnChartEvent(const int id,
    {
       if(sparam == BTN_BUY)
       {
-         Print("BUY AUTO clicked");
+         Print("AUTO BUY clicked");
          OpenAutoTrade(true);
       }
       else if(sparam == BTN_SELL)
       {
-         Print("SELL AUTO clicked");
+         Print("AUTO SELL clicked");
          OpenAutoTrade(false);
       }
    }
