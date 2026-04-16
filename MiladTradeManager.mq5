@@ -1,7 +1,7 @@
 //+------------------------------------------------------------------+
 //|                                            MiladTradeManager.mq5 |
 //+------------------------------------------------------------------+
-#property version   "3.01"
+#property version   "3.02"
 
 #include <Trade/Trade.mqh>
 CTrade trade;
@@ -23,6 +23,7 @@ string BTN_SALE   = "MILAD_BTN_SALE";
 string BTN_RESCUE = "MILAD_BTN_RESCUE";
 string BTN_CLOSE50 = "MILAD_BTN_CLOSE_50";
 string BTN_CLOSE30 = "MILAD_BTN_CLOSE_30";
+string BTN_GET100 = "MILAD_BTN_GET_100";
 
 //----------------------------------------------------
 // Weekly line prefixes
@@ -264,13 +265,15 @@ void CreateControlPanel()
    CreateButton(BTN_RESCUE, "RESCUE $10", 145, 64, clrDarkOrange);
    CreateButton(BTN_CLOSE50, "CLOSE 50%", 15, 98, clrSteelBlue);
    CreateButton(BTN_CLOSE30, "CLOSE 30%", 145, 98, clrSlateBlue);
+   CreateButton(BTN_GET100, "GET $100",   15, 132, clrDarkGreen);
 }
 
 void EnsureControlPanel()
 {
    if(ObjectFind(0, BTN_BUY) < 0 || ObjectFind(0, BTN_SELL) < 0 ||
       ObjectFind(0, BTN_SALE) < 0 || ObjectFind(0, BTN_RESCUE) < 0 ||
-      ObjectFind(0, BTN_CLOSE50) < 0 || ObjectFind(0, BTN_CLOSE30) < 0)
+      ObjectFind(0, BTN_CLOSE50) < 0 || ObjectFind(0, BTN_CLOSE30) < 0 ||
+      ObjectFind(0, BTN_GET100) < 0)
       CreateControlPanel();
 }
 
@@ -282,6 +285,7 @@ void DeleteControlPanel()
    ObjectDelete(0, BTN_RESCUE);
    ObjectDelete(0, BTN_CLOSE50);
    ObjectDelete(0, BTN_CLOSE30);
+   ObjectDelete(0, BTN_GET100);
 }
 
 //----------------------------------------------------
@@ -572,6 +576,146 @@ void ApplyRescueMode()
       Print("RESCUE mode completed with errors for ", symbol);
 }
 
+void SetTakeProfitForTargetUsd(double targetUsd)
+{
+   string symbol = _Symbol;
+   if(targetUsd <= 0.0)
+   {
+      Print("SET TP aborted: invalid targetUsd=", targetUsd);
+      return;
+   }
+
+   double buyVolume = 0.0;
+   double sellVolume = 0.0;
+   double buyWeightedPriceSum = 0.0;
+   double sellWeightedPriceSum = 0.0;
+   ulong buyTickets[];
+   ulong sellTickets[];
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
+
+      ENUM_POSITION_TYPE posType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+      double volume = PositionGetDouble(POSITION_VOLUME);
+      double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+
+      if(posType == POSITION_TYPE_BUY)
+      {
+         buyVolume += volume;
+         buyWeightedPriceSum += entry * volume;
+         int buySize = ArraySize(buyTickets);
+         ArrayResize(buyTickets, buySize + 1);
+         buyTickets[buySize] = ticket;
+      }
+      else if(posType == POSITION_TYPE_SELL)
+      {
+         sellVolume += volume;
+         sellWeightedPriceSum += entry * volume;
+         int sellSize = ArraySize(sellTickets);
+         ArrayResize(sellTickets, sellSize + 1);
+         sellTickets[sellSize] = ticket;
+      }
+   }
+
+   if(buyVolume <= 0.0 && sellVolume <= 0.0)
+   {
+      Print("SET TP skipped: no open positions for ", symbol);
+      return;
+   }
+
+   int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+   bool allOk = true;
+
+   if(buyVolume > 0.0)
+   {
+      double buyEntry = buyWeightedPriceSum / buyVolume;
+      double buyDelta = ComputePriceDeltaForMoney(symbol, buyVolume, targetUsd);
+      if(buyDelta <= 0.0)
+      {
+         allOk = false;
+         Print("SET TP failed for BUY: could not compute delta.");
+      }
+      else
+      {
+         double tpBuy = NormalizeDouble(buyEntry + buyDelta, digits);
+         for(int i = 0; i < ArraySize(buyTickets); i++)
+         {
+            ulong ticket = buyTickets[i];
+            if(!PositionSelectByTicket(ticket))
+            {
+               allOk = false;
+               Print("SET TP BUY skipped: failed to select ticket=", ticket);
+               continue;
+            }
+
+            double currentSl = PositionGetDouble(POSITION_SL);
+            if(!trade.PositionModify(ticket, currentSl, tpBuy))
+            {
+               allOk = false;
+               Print("SET TP BUY failed. ticket=", ticket,
+                     " retcode=", trade.ResultRetcode(),
+                     " desc=", trade.ResultRetcodeDescription());
+            }
+         }
+
+         Print("SET TP BUY applied: target=$", DoubleToString(targetUsd, 2),
+               " totalVolume=", buyVolume,
+               " entry=", buyEntry,
+               " tp=", tpBuy,
+               " tickets=", ArraySize(buyTickets));
+      }
+   }
+
+   if(sellVolume > 0.0)
+   {
+      double sellEntry = sellWeightedPriceSum / sellVolume;
+      double sellDelta = ComputePriceDeltaForMoney(symbol, sellVolume, targetUsd);
+      if(sellDelta <= 0.0)
+      {
+         allOk = false;
+         Print("SET TP failed for SELL: could not compute delta.");
+      }
+      else
+      {
+         double tpSell = NormalizeDouble(sellEntry - sellDelta, digits);
+         for(int i = 0; i < ArraySize(sellTickets); i++)
+         {
+            ulong ticket = sellTickets[i];
+            if(!PositionSelectByTicket(ticket))
+            {
+               allOk = false;
+               Print("SET TP SELL skipped: failed to select ticket=", ticket);
+               continue;
+            }
+
+            double currentSl = PositionGetDouble(POSITION_SL);
+            if(!trade.PositionModify(ticket, currentSl, tpSell))
+            {
+               allOk = false;
+               Print("SET TP SELL failed. ticket=", ticket,
+                     " retcode=", trade.ResultRetcode(),
+                     " desc=", trade.ResultRetcodeDescription());
+            }
+         }
+
+         Print("SET TP SELL applied: target=$", DoubleToString(targetUsd, 2),
+               " totalVolume=", sellVolume,
+               " entry=", sellEntry,
+               " tp=", tpSell,
+               " tickets=", ArraySize(sellTickets));
+      }
+   }
+
+   if(allOk)
+      Print("SET TP mode completed for ", symbol, " target=$", DoubleToString(targetUsd, 2));
+   else
+      Print("SET TP mode completed with errors for ", symbol, " target=$", DoubleToString(targetUsd, 2));
+}
+
 void ClosePartialByPercent(double percent)
 {
    string symbol = _Symbol;
@@ -642,7 +786,7 @@ int OnInit()
    CreateControlPanel();
    DrawWeeklyLevels();
    ChartRedraw(0);
-   Print("MiladTradeManager v3.01 initialized on symbol ", _Symbol);
+   Print("MiladTradeManager v3.02 initialized on symbol ", _Symbol);
    return(INIT_SUCCEEDED);
 }
 
@@ -703,6 +847,11 @@ void OnChartEvent(const int id,
       {
          Print("CLOSE 30% clicked");
          ClosePartialByPercent(30.0);
+      }
+      else if(sparam == BTN_GET100)
+      {
+         Print("GET $100 clicked");
+         SetTakeProfitForTargetUsd(100.0);
       }
    }
 }
