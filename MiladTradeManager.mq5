@@ -705,6 +705,7 @@ void ManageOnePosition(ulong ticket)
    double triggerProfitUsd   = ProfitLockTriggerUSD;
    double partialTriggerUsd  = ProfitLockTriggerUSD;
    double trailingStartUsd   = TrailingStartUSD;
+   double rescueTriggerUsd   = -(stopLossUsd * 0.5);
 
    double initialSLPrice = FindPriceForTargetProfit(symbol, posType, volume, openPrice, -stopLossUsd);
    double initialTPPrice = FindPriceForTargetProfit(symbol, posType, volume, openPrice, stopLossUsd);
@@ -787,7 +788,7 @@ void ManageOnePosition(ulong ticket)
          SafeModifyPosition(ticket, symbol, lockedSLPrice, currentTP);
    }
 
-   if(currentProfit <= NegativeTriggerUSD)
+   if(currentProfit <= rescueTriggerUsd)
    {
       bool shouldMoveTP = false;
 
