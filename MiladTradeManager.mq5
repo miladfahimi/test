@@ -433,25 +433,49 @@ bool ApplyRescueForSide(string symbol,
    }
 
    int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
-   double tpPrice = 0.0;
-   double slPrice = 0.0;
+   double marketPrice = (side == POSITION_TYPE_BUY)
+                        ? SymbolInfoDouble(symbol, SYMBOL_BID)
+                        : SymbolInfoDouble(symbol, SYMBOL_ASK);
+   bool isInProfit = (side == POSITION_TYPE_BUY)
+                     ? (marketPrice > weightedEntry)
+                     : (marketPrice < weightedEntry);
 
-   if(side == POSITION_TYPE_BUY)
-   {
-      tpPrice = NormalizeDouble(weightedEntry + delta, digits);
-      slPrice = NormalizeDouble(weightedEntry - delta, digits);
-   }
-   else
-   {
-      tpPrice = NormalizeDouble(weightedEntry - delta, digits);
-      slPrice = NormalizeDouble(weightedEntry + delta, digits);
-   }
+   double rescueTp = NormalizeDouble((side == POSITION_TYPE_BUY)
+                                     ? (weightedEntry + delta)
+                                     : (weightedEntry - delta), digits);
+   double rescueSl = NormalizeDouble((side == POSITION_TYPE_BUY)
+                                     ? (weightedEntry + delta)
+                                     : (weightedEntry - delta), digits);
 
    bool allOk = true;
    for(int i = 0; i < ArraySize(tickets); i++)
    {
       ulong ticket = tickets[i];
-      if(!trade.PositionModify(ticket, slPrice, tpPrice))
+      if(!PositionSelectByTicket(ticket))
+      {
+         allOk = false;
+         Print("RESCUE modify skipped: failed to select ticket=", ticket);
+         continue;
+      }
+
+      double currentSl = PositionGetDouble(POSITION_SL);
+      double currentTp = PositionGetDouble(POSITION_TP);
+
+      double newSl = currentSl;
+      double newTp = currentTp;
+
+      if(isInProfit)
+      {
+         // Winning basket: secure +$target by moving SL to profit side.
+         newSl = rescueSl;
+      }
+      else
+      {
+         // Losing basket: move TP to +$target from weighted entry.
+         newTp = rescueTp;
+      }
+
+      if(!trade.PositionModify(ticket, newSl, newTp))
       {
          allOk = false;
          Print("RESCUE modify failed. ticket=", ticket,
@@ -462,11 +486,11 @@ bool ApplyRescueForSide(string symbol,
 
    Print("RESCUE applied on ", symbol,
          " side=", (side == POSITION_TYPE_BUY ? "BUY" : "SELL"),
+         " mode=", (isInProfit ? "LOCK_PROFIT_SL" : "RECOVERY_TP"),
          " target=$", DoubleToString(RescueTargetUsd, 2),
          " totalVolume=", totalVolume,
          " entry=", weightedEntry,
-         " SL=", slPrice,
-         " TP=", tpPrice,
+         " rescueLevel=", (isInProfit ? rescueSl : rescueTp),
          " tickets=", ArraySize(tickets));
 
    return allOk;
