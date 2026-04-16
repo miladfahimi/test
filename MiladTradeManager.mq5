@@ -351,7 +351,8 @@ void OpenAutoTrade(bool isBuy)
 
 void OpenAutoTradeForSymbol(bool isBuy, string symbol)
 {
-   symbol = StringTrimLeft(StringTrimRight(symbol));
+   StringTrimRight(symbol);
+   StringTrimLeft(symbol);
    if(symbol == "")
       symbol = _Symbol;
 
@@ -532,7 +533,8 @@ void ApplyRescueMode()
 
 void ApplyRescueModeForSymbol(string symbol)
 {
-   symbol = StringTrimLeft(StringTrimRight(symbol));
+   StringTrimRight(symbol);
+   StringTrimLeft(symbol);
    if(symbol == "")
       symbol = _Symbol;
 
@@ -608,7 +610,8 @@ void SetTakeProfitForTargetUsd(double targetUsd)
 
 void SetTakeProfitForTargetUsdForSymbol(double targetUsd, string symbol)
 {
-   symbol = StringTrimLeft(StringTrimRight(symbol));
+   StringTrimRight(symbol);
+   StringTrimLeft(symbol);
    if(symbol == "")
       symbol = _Symbol;
    if(targetUsd <= 0.0)
@@ -755,7 +758,8 @@ void ClosePartialByPercent(double percent)
 
 void ClosePartialByPercentForSymbol(double percent, string symbol)
 {
-   symbol = StringTrimLeft(StringTrimRight(symbol));
+   StringTrimRight(symbol);
+   StringTrimLeft(symbol);
    if(symbol == "")
       symbol = _Symbol;
    if(percent <= 0.0 || percent >= 100.0)
@@ -837,7 +841,8 @@ string ExtractJsonValue(const string body, const string keyName)
       return "";
 
    string value = StringSubstr(body, firstQuote + 1, secondQuote - firstQuote - 1);
-   value = StringTrimLeft(StringTrimRight(value));
+   StringTrimRight(value);
+   StringTrimLeft(value);
    return value;
 }
 
@@ -867,15 +872,28 @@ bool FetchBridgeCommand(string &command, string &stack)
    }
 
    string body = CharArrayToString(response);
-   command = StringToLower(ExtractJsonValue(body, "command"));
-   stack = StringTrimLeft(StringTrimRight(ExtractJsonValue(body, "stack")));
+
+   command = ExtractJsonValue(body, "command");
+   StringTrimRight(command);
+   StringTrimLeft(command);
+   StringToLower(command);
+
+   stack = ExtractJsonValue(body, "stack");
+   StringTrimRight(stack);
+   StringTrimLeft(stack);
    return (command != "");
 }
 
 void ExecuteExternalCommand(const string rawCommand, const string rawStack)
 {
-   string command = StringToLower(StringTrimLeft(StringTrimRight(rawCommand)));
-   string symbol = StringTrimLeft(StringTrimRight(rawStack));
+   string command = rawCommand;
+   StringTrimRight(command);
+   StringTrimLeft(command);
+   StringToLower(command);
+
+   string symbol = rawStack;
+   StringTrimRight(symbol);
+   StringTrimLeft(symbol);
    if(symbol == "")
       symbol = _Symbol;
 

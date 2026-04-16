@@ -4,13 +4,15 @@
 from __future__ import annotations
 
 import json
+import os
 from collections import deque
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Lock
+from time import time
 
-HOST = "127.0.0.1"
+HOST = os.getenv("BRIDGE_HOST", "127.0.0.1")
 PORT = 8000
 WEB_DIR = Path(__file__).with_name("web")
 
@@ -35,6 +37,8 @@ COMMANDS = {
 
 command_queue: deque[dict[str, str]] = deque()
 queue_lock = Lock()
+bridge_lock = Lock()
+last_bridge_poll_ts = 0.0
 
 
 def push_command(command: str, stack: str) -> None:
@@ -43,10 +47,33 @@ def push_command(command: str, stack: str) -> None:
 
 
 def pop_command() -> dict[str, str]:
+    global last_bridge_poll_ts
     with queue_lock:
+        with bridge_lock:
+            last_bridge_poll_ts = time()
         if not command_queue:
             return {"command": "", "stack": ""}
         return command_queue.popleft()
+
+
+def get_bridge_state() -> dict[str, float | bool | None]:
+    with bridge_lock:
+        ts = last_bridge_poll_ts
+
+    if ts <= 0:
+        return {
+            "bridge_connected": False,
+            "last_bridge_poll_unix": None,
+            "last_bridge_poll_seconds_ago": None,
+        }
+
+    seconds_ago = max(0.0, time() - ts)
+    # Consider bridge "connected" if EA polled within the last 5 seconds.
+    return {
+        "bridge_connected": seconds_ago <= 5.0,
+        "last_bridge_poll_unix": ts,
+        "last_bridge_poll_seconds_ago": round(seconds_ago, 2),
+    }
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -83,7 +110,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/status":
             with queue_lock:
                 size = len(command_queue)
-            self._send_json({"ok": True, "queue_size": size})
+            self._send_json({"ok": True, "queue_size": size, **get_bridge_state()})
             return
 
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
@@ -129,7 +156,11 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Local bridge server running on http://{HOST}:{PORT}")
-    print("Open the UI at http://127.0.0.1:8000/")
+    if HOST == "0.0.0.0":
+        print("Open the UI from this PC at http://127.0.0.1:8000/")
+        print("Open the UI from your phone at http://<your-pc-lan-ip>:8000/")
+    else:
+        print(f"Open the UI at http://{HOST}:{PORT}/")
     server.serve_forever()
 
 

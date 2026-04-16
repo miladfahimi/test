@@ -54,20 +54,26 @@
     const actionButtons = document.querySelectorAll('button[data-command]');
     const stackTabs = document.querySelectorAll('button[data-stack]');
     let selectedStack = '';
+    let lastBridgeConnected = false;
+
+    function setStatus(message, isError = false) {
+      statusEl.textContent = message;
+      statusEl.style.border = isError ? '1px solid #ef4444' : '1px solid transparent';
+    }
 
     function setSelectedStack(stack) {
       selectedStack = stack;
       stackTabs.forEach((tab) => tab.classList.toggle('active', tab.dataset.stack === stack));
       actionButtons.forEach((btn) => { btn.disabled = !selectedStack; });
-      statusEl.textContent = `Selected stack: ${selectedStack}. Ready to send commands.`;
+      setStatus(`Selected stack: ${selectedStack}. Ready to send commands.`);
     }
 
     async function sendCommand(command) {
       if (!selectedStack) {
-        statusEl.textContent = 'Select a stack first.';
+        setStatus('Select a stack first.', true);
         return;
       }
-      statusEl.textContent = `Sending ${command}...`;
+      setStatus(`Sending ${command}...`);
       try {
         const res = await fetch('/api/command', {
           method: 'POST',
@@ -76,12 +82,38 @@
         });
         const data = await res.json();
         if (!res.ok || !data.ok) {
-          statusEl.textContent = `Error: ${data.error || 'Request failed'}`;
+          setStatus(`Error: ${data.error || 'Request failed'}`, true);
           return;
         }
-        statusEl.textContent = `Queued ${data.queued} for ${data.stack}`;
+        const hint = lastBridgeConnected
+          ? 'EA is connected and polling.'
+          : 'Warning: EA has not polled recently. Check MT5 WebRequest whitelist + EnableLocalWebBridge.';
+        setStatus(`Queued ${data.queued} for ${data.stack}. ${hint}`, !lastBridgeConnected);
       } catch (err) {
-        statusEl.textContent = `Connection error: ${err}`;
+        setStatus(`Connection error: ${err}`, true);
+      }
+    }
+
+    async function refreshBridgeStatus() {
+      try {
+        const res = await fetch('/api/status');
+        const data = await res.json();
+        if (!res.ok || !data.ok) return;
+        lastBridgeConnected = Boolean(data.bridge_connected);
+
+        if (!selectedStack) {
+          if (data.bridge_connected) {
+            setStatus(`Status: EA connected. Queue size: ${data.queue_size}. Select a stack to send commands.`);
+          } else {
+            setStatus(
+              `Status: EA NOT connected yet. Queue size: ${data.queue_size}. ` +
+              'In MT5 set EnableLocalWebBridge=true and allow WebRequest URL http://127.0.0.1:8000',
+              true,
+            );
+          }
+        }
+      } catch (_err) {
+        // Ignore temporary polling failures to avoid flickering status while user interacts.
       }
     }
 
@@ -92,6 +124,9 @@
     stackTabs.forEach((tab) => {
       tab.addEventListener('click', () => setSelectedStack(tab.dataset.stack));
     });
+
+    refreshBridgeStatus();
+    setInterval(refreshBridgeStatus, 2000);
   </script>
 </body>
 </html>
