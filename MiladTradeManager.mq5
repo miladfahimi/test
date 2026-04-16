@@ -24,13 +24,13 @@ input double PartialClosePercent        = 50.0;
 input double ExtraProfitAfterPartialUSD = 50.0;
 
 input double TrailingStartPercent       = 70.0;
-input double TrailingDistanceUSD        = 20.0;
+input double TrailingDistanceUSD        = 50.0;
 
 input bool   OnePositionPerSymbol       = true;
 input bool   UseCurrentChartSymbol      = true;
 
 input bool   EnableWeeklyLevels         = true;
-input double EntryZoneUSD               = 5.0;
+input double EntryZoneUSD               = 50.0;
 
 //----------------------------------------------------
 // Button names
@@ -325,6 +325,61 @@ bool IsNearWeeklyLevel(string symbol, ENUM_ORDER_TYPE orderType, double volume)
    return false;
 }
 
+bool FindNearestWeeklyOppositeLevel(string symbol,
+                                    ENUM_POSITION_TYPE posType,
+                                    double referencePrice,
+                                    double &nearestLevel)
+{
+   double levels[];
+   int count = GetWeeklyLevels(symbol, levels);
+   if(count <= 0)
+      return false;
+
+   bool found = false;
+   double bestDistance = DBL_MAX;
+
+   for(int i = 0; i < count; i++)
+   {
+      double level = levels[i];
+      double distance = 0.0;
+
+      if(posType == POSITION_TYPE_BUY)
+      {
+         if(level >= referencePrice)
+            continue;
+         distance = referencePrice - level;
+      }
+      else
+      {
+         if(level <= referencePrice)
+            continue;
+         distance = level - referencePrice;
+      }
+
+      if(distance < bestDistance)
+      {
+         bestDistance = distance;
+         nearestLevel = level;
+         found = true;
+      }
+   }
+
+   return found;
+}
+
+double ComputeWeeklyBasedStopLoss(string symbol,
+                                  ENUM_POSITION_TYPE posType,
+                                  double volume,
+                                  double openPrice,
+                                  double bufferUsd)
+{
+   double nearestLevel = 0.0;
+   if(!FindNearestWeeklyOppositeLevel(symbol, posType, openPrice, nearestLevel))
+      return 0.0;
+
+   return FindPriceForTargetProfit(symbol, posType, volume, nearestLevel, -MathAbs(bufferUsd));
+}
+
 //----------------------------------------------------
 // Safe modify
 //----------------------------------------------------
@@ -527,8 +582,19 @@ void OpenAutoTrade(bool isBuy)
       return;
    }
 
-   double tpUsd = equity * (TargetProfitPercent / 100.0);
-   double slUsd = equity * (StopLossPercent / 100.0);
+   double fixedTpUsd = 150.0;
+   double weeklySlBufferUsd = 50.0;
+
+   ENUM_POSITION_TYPE plannedPosType = isBuy ? POSITION_TYPE_BUY : POSITION_TYPE_SELL;
+   double currentPrice = (plannedPosType == POSITION_TYPE_BUY)
+                         ? SymbolInfoDouble(symbol, SYMBOL_ASK)
+                         : SymbolInfoDouble(symbol, SYMBOL_BID);
+   double nearestOppositeLevel = 0.0;
+   if(!FindNearestWeeklyOppositeLevel(symbol, plannedPosType, currentPrice, nearestOppositeLevel))
+   {
+      Print("Entry blocked: no weekly level found on opposite side for stop loss placement");
+      return;
+   }
 
    bool sent = false;
    if(isBuy)
@@ -558,8 +624,10 @@ void OpenAutoTrade(bool isBuy)
       double posVolume           = PositionGetDouble(POSITION_VOLUME);
       double openPrice           = PositionGetDouble(POSITION_PRICE_OPEN);
 
-      double slPrice = FindPriceForTargetProfit(symbol, posType, posVolume, openPrice, -slUsd);
-      double tpPrice = FindPriceForTargetProfit(symbol, posType, posVolume, openPrice,  tpUsd);
+      double slPrice = ComputeWeeklyBasedStopLoss(symbol, posType, posVolume, openPrice, weeklySlBufferUsd);
+      if(slPrice <= 0.0)
+         slPrice = FindPriceForTargetProfit(symbol, posType, posVolume, openPrice, -(equity * (StopLossPercent / 100.0)));
+      double tpPrice = FindPriceForTargetProfit(symbol, posType, posVolume, openPrice, fixedTpUsd);
 
       SafeModifyPosition(ticket, symbol, slPrice, tpPrice);
       ClearPartialCloseFlag(ticket);
@@ -568,8 +636,8 @@ void OpenAutoTrade(bool isBuy)
             " symbol=", symbol,
             " volume=", posVolume,
             " equity=", equity,
-            " TP_USD=", tpUsd,
-            " SL_USD=", slUsd,
+            " TP_USD=", fixedTpUsd,
+            " SL_mode=weekly_level_plus_buffer",
             " maxMarginMoney=", maxMarginMoney);
       return;
    }
@@ -603,7 +671,7 @@ void ManageOnePosition(ulong ticket)
    double trailingStartUsd   = targetProfitUsd * (TrailingStartPercent / 100.0);
 
    double initialSLPrice = FindPriceForTargetProfit(symbol, posType, volume, openPrice, -stopLossUsd);
-   double initialTPPrice = FindPriceForTargetProfit(symbol, posType, volume, openPrice,  targetProfitUsd);
+   double initialTPPrice = FindPriceForTargetProfit(symbol, posType, volume, openPrice, 150.0);
    double lockedSLPrice  = FindPriceForTargetProfit(symbol, posType, volume, openPrice,  LockedProfitUSD);
    double rescueTPPrice  = FindPriceForTargetProfit(symbol, posType, volume, openPrice,  RescueTakeProfitUSD);
 
