@@ -17,8 +17,9 @@ input double RescueTargetUsd       = 10.0;
 //----------------------------------------------------
 // Button names
 //----------------------------------------------------
-string BTN_BUY  = "MILAD_BTN_BUY_AUTO";
-string BTN_SELL = "MILAD_BTN_SELL_AUTO";
+string BTN_BUY    = "MILAD_BTN_BUY_AUTO";
+string BTN_SELL   = "MILAD_BTN_SELL_AUTO";
+string BTN_SALE   = "MILAD_BTN_SALE";
 string BTN_RESCUE = "MILAD_BTN_RESCUE";
 
 //----------------------------------------------------
@@ -255,14 +256,16 @@ bool CreateButton(const string name, const string text, int x, int y, color bg)
 
 void CreateControlPanel()
 {
-   CreateButton(BTN_BUY,  "AUTO BUY",  15, 30, clrSeaGreen);
-   CreateButton(BTN_SELL, "AUTO SELL", 145, 30, clrFireBrick);
-   CreateButton(BTN_RESCUE, "RESCUE $10", 275, 30, clrDarkOrange);
+   CreateButton(BTN_BUY,    "AUTO BUY",   15, 30, clrSeaGreen);
+   CreateButton(BTN_SELL,   "AUTO SELL", 145, 30, clrFireBrick);
+   CreateButton(BTN_SALE,   "SALE",       15, 64, clrIndianRed);
+   CreateButton(BTN_RESCUE, "RESCUE $10", 145, 64, clrDarkOrange);
 }
 
 void EnsureControlPanel()
 {
-   if(ObjectFind(0, BTN_BUY) < 0 || ObjectFind(0, BTN_SELL) < 0 || ObjectFind(0, BTN_RESCUE) < 0)
+   if(ObjectFind(0, BTN_BUY) < 0 || ObjectFind(0, BTN_SELL) < 0 ||
+      ObjectFind(0, BTN_SALE) < 0 || ObjectFind(0, BTN_RESCUE) < 0)
       CreateControlPanel();
 }
 
@@ -270,6 +273,7 @@ void DeleteControlPanel()
 {
    ObjectDelete(0, BTN_BUY);
    ObjectDelete(0, BTN_SELL);
+   ObjectDelete(0, BTN_SALE);
    ObjectDelete(0, BTN_RESCUE);
 }
 
@@ -585,6 +589,11 @@ void OnChartEvent(const int id,
       else if(sparam == BTN_SELL)
       {
          Print("AUTO SELL clicked");
+         OpenAutoTrade(false);
+      }
+      else if(sparam == BTN_SALE)
+      {
+         Print("SALE clicked");
          OpenAutoTrade(false);
       }
       else if(sparam == BTN_RESCUE)
