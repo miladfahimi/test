@@ -1,7 +1,7 @@
 //+------------------------------------------------------------------+
 //|                                            MiladTradeManager.mq5 |
 //+------------------------------------------------------------------+
-#property version   "3.00"
+#property version   "3.01"
 
 #include <Trade/Trade.mqh>
 CTrade trade;
@@ -21,6 +21,8 @@ string BTN_BUY    = "MILAD_BTN_BUY_AUTO";
 string BTN_SELL   = "MILAD_BTN_SELL_AUTO";
 string BTN_SALE   = "MILAD_BTN_SALE";
 string BTN_RESCUE = "MILAD_BTN_RESCUE";
+string BTN_CLOSE50 = "MILAD_BTN_CLOSE_50";
+string BTN_CLOSE30 = "MILAD_BTN_CLOSE_30";
 
 //----------------------------------------------------
 // Weekly line prefixes
@@ -260,12 +262,15 @@ void CreateControlPanel()
    CreateButton(BTN_SELL,   "AUTO SELL", 145, 30, clrFireBrick);
    CreateButton(BTN_SALE,   "SALE",       15, 64, clrIndianRed);
    CreateButton(BTN_RESCUE, "RESCUE $10", 145, 64, clrDarkOrange);
+   CreateButton(BTN_CLOSE50, "CLOSE 50%", 15, 98, clrSteelBlue);
+   CreateButton(BTN_CLOSE30, "CLOSE 30%", 145, 98, clrSlateBlue);
 }
 
 void EnsureControlPanel()
 {
    if(ObjectFind(0, BTN_BUY) < 0 || ObjectFind(0, BTN_SELL) < 0 ||
-      ObjectFind(0, BTN_SALE) < 0 || ObjectFind(0, BTN_RESCUE) < 0)
+      ObjectFind(0, BTN_SALE) < 0 || ObjectFind(0, BTN_RESCUE) < 0 ||
+      ObjectFind(0, BTN_CLOSE50) < 0 || ObjectFind(0, BTN_CLOSE30) < 0)
       CreateControlPanel();
 }
 
@@ -275,6 +280,8 @@ void DeleteControlPanel()
    ObjectDelete(0, BTN_SELL);
    ObjectDelete(0, BTN_SALE);
    ObjectDelete(0, BTN_RESCUE);
+   ObjectDelete(0, BTN_CLOSE50);
+   ObjectDelete(0, BTN_CLOSE30);
 }
 
 //----------------------------------------------------
@@ -565,6 +572,68 @@ void ApplyRescueMode()
       Print("RESCUE mode completed with errors for ", symbol);
 }
 
+void ClosePartialByPercent(double percent)
+{
+   string symbol = _Symbol;
+   if(percent <= 0.0 || percent >= 100.0)
+   {
+      Print("Partial close aborted: invalid percent=", percent);
+      return;
+   }
+
+   double minLot  = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+   int affected = 0;
+   int closed = 0;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
+
+      double currentVolume = PositionGetDouble(POSITION_VOLUME);
+      double closeVolume = NormalizeVolumeBySymbol(symbol, currentVolume * (percent / 100.0));
+      double remainingVolume = NormalizeVolumeBySymbol(symbol, currentVolume - closeVolume);
+      affected++;
+
+      if(closeVolume <= 0.0)
+      {
+         Print("Partial close skipped (volume too small). ticket=", ticket,
+               " current=", currentVolume, " percent=", percent);
+         continue;
+      }
+
+      if(closeVolume >= currentVolume || remainingVolume < minLot)
+      {
+         Print("Partial close skipped (would fully close or break min lot). ticket=", ticket,
+               " current=", currentVolume, " close=", closeVolume,
+               " remaining=", remainingVolume, " minLot=", minLot);
+         continue;
+      }
+
+      if(!trade.PositionClosePartial(ticket, closeVolume))
+      {
+         Print("Partial close failed. ticket=", ticket,
+               " closeVolume=", closeVolume,
+               " retcode=", trade.ResultRetcode(),
+               " desc=", trade.ResultRetcodeDescription());
+         continue;
+      }
+
+      closed++;
+      Print("Partial close success. ticket=", ticket,
+            " closeVolume=", closeVolume,
+            " percent=", percent);
+   }
+
+   if(affected == 0)
+      Print("Partial close skipped: no open positions for ", symbol);
+   else
+      Print("Partial close summary for ", symbol, ": affected=", affected,
+            " partiallyClosed=", closed, " percent=", percent);
+}
+
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
 //+------------------------------------------------------------------+
@@ -573,7 +642,7 @@ int OnInit()
    CreateControlPanel();
    DrawWeeklyLevels();
    ChartRedraw(0);
-   Print("MiladTradeManager v3.00 initialized on symbol ", _Symbol);
+   Print("MiladTradeManager v3.01 initialized on symbol ", _Symbol);
    return(INIT_SUCCEEDED);
 }
 
@@ -624,6 +693,16 @@ void OnChartEvent(const int id,
       {
          Print("RESCUE clicked");
          ApplyRescueMode();
+      }
+      else if(sparam == BTN_CLOSE50)
+      {
+         Print("CLOSE 50% clicked");
+         ClosePartialByPercent(50.0);
+      }
+      else if(sparam == BTN_CLOSE30)
+      {
+         Print("CLOSE 30% clicked");
+         ClosePartialByPercent(30.0);
       }
    }
 }
