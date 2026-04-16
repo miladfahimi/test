@@ -1,7 +1,7 @@
 //+------------------------------------------------------------------+
 //|                                            MiladTradeManager.mq5 |
 //+------------------------------------------------------------------+
-#property version   "2.60"
+#property version   "2.61"
 
 #include <Trade/Trade.mqh>
 CTrade trade;
@@ -13,17 +13,15 @@ input double MaxMarginUsagePercent      = 25.0;
 input double TargetProfitPercent        = 1.0;
 input double StopLossPercent            = 1.0;
 
-input double ProfitTriggerPercent       = 50.0;
+input double ProfitLockTriggerUSD       = 100.0;
 input double LockedProfitUSD            = 10.0;
 
 input double NegativeTriggerUSD         = -30.0;
 input double RescueTakeProfitUSD        = 10.0;
 
-input double PartialCloseTriggerPercent = 70.0;
 input double PartialClosePercent        = 50.0;
-input double ExtraProfitAfterPartialUSD = 50.0;
 
-input double TrailingStartPercent       = 70.0;
+input double TrailingStartUSD           = 200.0;
 input double TrailingDistanceUSD        = 50.0;
 
 input bool   OnePositionPerSymbol       = true;
@@ -583,7 +581,7 @@ bool TryPartialCloseAndExtendTP(ulong ticket, string symbol, double currentSL)
       return true;
 
    double remainingVolume = PositionGetDouble(POSITION_VOLUME);
-   double newTPProfitUSD  = (GetEquity() * (TargetProfitPercent / 100.0)) + ExtraProfitAfterPartialUSD;
+   double newTPProfitUSD  = GetEquity() * (StopLossPercent / 100.0);
    double newTPPrice      = FindPriceForTargetProfit(symbol, posType, remainingVolume, openPrice, newTPProfitUSD);
 
    SafeModifyPosition(ticket, symbol, currentSL, newTPPrice);
@@ -621,7 +619,7 @@ void OpenAutoTrade(bool isBuy)
       return;
    }
 
-   double fixedTpUsd = 150.0;
+   double fixedTpUsd = equity * (StopLossPercent / 100.0);
    double weeklySlBufferUsd = 50.0;
 
    ENUM_POSITION_TYPE plannedPosType = isBuy ? POSITION_TYPE_BUY : POSITION_TYPE_SELL;
@@ -703,14 +701,13 @@ void ManageOnePosition(ulong ticket)
    double currentTP           = PositionGetDouble(POSITION_TP);
 
    double equity             = GetEquity();
-   double targetProfitUsd    = equity * (TargetProfitPercent / 100.0);
    double stopLossUsd        = equity * (StopLossPercent / 100.0);
-   double triggerProfitUsd   = targetProfitUsd * (ProfitTriggerPercent / 100.0);
-   double partialTriggerUsd  = targetProfitUsd * (PartialCloseTriggerPercent / 100.0);
-   double trailingStartUsd   = targetProfitUsd * (TrailingStartPercent / 100.0);
+   double triggerProfitUsd   = ProfitLockTriggerUSD;
+   double partialTriggerUsd  = ProfitLockTriggerUSD;
+   double trailingStartUsd   = TrailingStartUSD;
 
    double initialSLPrice = FindPriceForTargetProfit(symbol, posType, volume, openPrice, -stopLossUsd);
-   double initialTPPrice = FindPriceForTargetProfit(symbol, posType, volume, openPrice, 150.0);
+   double initialTPPrice = FindPriceForTargetProfit(symbol, posType, volume, openPrice, stopLossUsd);
    double lockedSLPrice  = FindPriceForTargetProfit(symbol, posType, volume, openPrice,  LockedProfitUSD);
    double rescueTPPrice  = FindPriceForTargetProfit(symbol, posType, volume, openPrice,  RescueTakeProfitUSD);
 
