@@ -29,6 +29,7 @@ input bool   UseCurrentChartSymbol      = true;
 
 input bool   EnableWeeklyLevels         = true;
 input double EntryZoneUSD               = 50.0;
+input double WeeklyTPPullbackUSD        = 50.0;
 
 //----------------------------------------------------
 // Button names
@@ -368,6 +369,48 @@ bool FindNearestWeeklyOppositeLevel(string symbol,
    return found;
 }
 
+bool FindNearestWeeklyTargetLevel(string symbol,
+                                  ENUM_POSITION_TYPE posType,
+                                  double referencePrice,
+                                  double &nearestLevel)
+{
+   double levels[];
+   int count = GetWeeklyLevels(symbol, levels);
+   if(count <= 0)
+      return false;
+
+   bool found = false;
+   double bestDistance = DBL_MAX;
+
+   for(int i = 0; i < count; i++)
+   {
+      double level = levels[i];
+      double distance = 0.0;
+
+      if(posType == POSITION_TYPE_BUY)
+      {
+         if(level <= referencePrice)
+            continue;
+         distance = level - referencePrice;
+      }
+      else
+      {
+         if(level >= referencePrice)
+            continue;
+         distance = referencePrice - level;
+      }
+
+      if(distance < bestDistance)
+      {
+         bestDistance = distance;
+         nearestLevel = level;
+         found = true;
+      }
+   }
+
+   return found;
+}
+
 double ComputeWeeklyBasedStopLoss(string symbol,
                                   ENUM_POSITION_TYPE posType,
                                   double volume,
@@ -379,6 +422,36 @@ double ComputeWeeklyBasedStopLoss(string symbol,
       return 0.0;
 
    return FindPriceForTargetProfit(symbol, posType, volume, nearestLevel, -MathAbs(bufferUsd));
+}
+
+double ComputeWeeklyBasedTakeProfit(string symbol,
+                                    ENUM_POSITION_TYPE posType,
+                                    double volume,
+                                    double openPrice,
+                                    double pullbackUsd)
+{
+   double nearestTargetLevel = 0.0;
+   if(!FindNearestWeeklyTargetLevel(symbol, posType, openPrice, nearestTargetLevel))
+      return 0.0;
+
+   ENUM_ORDER_TYPE orderType = (posType == POSITION_TYPE_BUY) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   double levelProfitUsd = 0.0;
+   if(!OrderCalcProfit(orderType, symbol, volume, openPrice, nearestTargetLevel, levelProfitUsd))
+      return nearestTargetLevel;
+
+   levelProfitUsd = MathAbs(levelProfitUsd);
+   if(levelProfitUsd <= 0.0)
+      return nearestTargetLevel;
+
+   double dynamicPullbackUsd = MathMin(MathAbs(pullbackUsd), levelProfitUsd * 0.5);
+   if(dynamicPullbackUsd <= 0.0)
+      return nearestTargetLevel;
+
+   double targetProfitUsd = levelProfitUsd - dynamicPullbackUsd;
+   if(targetProfitUsd <= 0.0)
+      return nearestTargetLevel;
+
+   return FindPriceForTargetProfit(symbol, posType, volume, openPrice, targetProfitUsd);
 }
 
 //----------------------------------------------------
@@ -619,7 +692,6 @@ void OpenAutoTrade(bool isBuy)
       return;
    }
 
-   double fixedTpUsd = equity * (StopLossPercent / 100.0);
    double weeklySlBufferUsd = 50.0;
 
    ENUM_POSITION_TYPE plannedPosType = isBuy ? POSITION_TYPE_BUY : POSITION_TYPE_SELL;
@@ -664,7 +736,9 @@ void OpenAutoTrade(bool isBuy)
       double slPrice = ComputeWeeklyBasedStopLoss(symbol, posType, posVolume, openPrice, weeklySlBufferUsd);
       if(slPrice <= 0.0)
          slPrice = FindPriceForTargetProfit(symbol, posType, posVolume, openPrice, -(equity * (StopLossPercent / 100.0)));
-      double tpPrice = FindPriceForTargetProfit(symbol, posType, posVolume, openPrice, fixedTpUsd);
+      double tpPrice = ComputeWeeklyBasedTakeProfit(symbol, posType, posVolume, openPrice, WeeklyTPPullbackUSD);
+      if(tpPrice <= 0.0)
+         tpPrice = FindPriceForTargetProfit(symbol, posType, posVolume, openPrice, (equity * (StopLossPercent / 100.0)));
 
       SafeModifyPosition(ticket, symbol, slPrice, tpPrice);
       ClearPartialCloseFlag(ticket);
@@ -673,7 +747,7 @@ void OpenAutoTrade(bool isBuy)
             " symbol=", symbol,
             " volume=", posVolume,
             " equity=", equity,
-            " TP_USD=", fixedTpUsd,
+            " TP_mode=weekly_next_line_dynamic_pullback",
             " SL_mode=weekly_level_plus_buffer",
             " maxMarginMoney=", maxMarginMoney);
       return;
@@ -708,7 +782,9 @@ void ManageOnePosition(ulong ticket)
    double rescueTriggerUsd   = -(stopLossUsd * 0.5);
 
    double initialSLPrice = FindPriceForTargetProfit(symbol, posType, volume, openPrice, -stopLossUsd);
-   double initialTPPrice = FindPriceForTargetProfit(symbol, posType, volume, openPrice, stopLossUsd);
+   double initialTPPrice = ComputeWeeklyBasedTakeProfit(symbol, posType, volume, openPrice, WeeklyTPPullbackUSD);
+   if(initialTPPrice <= 0.0)
+      initialTPPrice = FindPriceForTargetProfit(symbol, posType, volume, openPrice, stopLossUsd);
    double lockedSLPrice  = FindPriceForTargetProfit(symbol, posType, volume, openPrice,  LockedProfitUSD);
    double rescueTPPrice  = FindPriceForTargetProfit(symbol, posType, volume, openPrice,  RescueTakeProfitUSD);
 
