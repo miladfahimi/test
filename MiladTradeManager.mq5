@@ -37,6 +37,9 @@ input double EntryZoneUSD               = 50.0;
 //----------------------------------------------------
 string BTN_BUY  = "MILAD_BTN_BUY_AUTO";
 string BTN_SELL = "MILAD_BTN_SELL_AUTO";
+string CHK_ENTRY_ZONE = "MILAD_CHK_ENTRY_ZONE";
+
+bool EntryZoneCheckEnabled = true;
 
 //----------------------------------------------------
 // Weekly line prefixes
@@ -444,16 +447,52 @@ bool CreateButton(const string name, const string text, int x, int y, color bg)
    return true;
 }
 
+void UpdateEntryZoneCheckbox()
+{
+   string text = EntryZoneCheckEnabled ? "[x] ENTRY ZONE" : "[ ] ENTRY ZONE";
+   ObjectSetString(0, CHK_ENTRY_ZONE, OBJPROP_TEXT, text);
+}
+
+bool CreateEntryZoneCheckbox(int x, int y)
+{
+   if(ObjectFind(0, CHK_ENTRY_ZONE) >= 0)
+      ObjectDelete(0, CHK_ENTRY_ZONE);
+
+   if(!ObjectCreate(0, CHK_ENTRY_ZONE, OBJ_BUTTON, 0, 0, 0))
+   {
+      Print("Failed to create checkbox: ", CHK_ENTRY_ZONE, " error=", GetLastError());
+      return false;
+   }
+
+   ObjectSetInteger(0, CHK_ENTRY_ZONE, OBJPROP_XDISTANCE, x);
+   ObjectSetInteger(0, CHK_ENTRY_ZONE, OBJPROP_YDISTANCE, y);
+   ObjectSetInteger(0, CHK_ENTRY_ZONE, OBJPROP_XSIZE, 250);
+   ObjectSetInteger(0, CHK_ENTRY_ZONE, OBJPROP_YSIZE, 24);
+   ObjectSetInteger(0, CHK_ENTRY_ZONE, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   ObjectSetInteger(0, CHK_ENTRY_ZONE, OBJPROP_FONTSIZE, 10);
+   ObjectSetInteger(0, CHK_ENTRY_ZONE, OBJPROP_COLOR, clrWhite);
+   ObjectSetInteger(0, CHK_ENTRY_ZONE, OBJPROP_BGCOLOR, clrDimGray);
+   ObjectSetInteger(0, CHK_ENTRY_ZONE, OBJPROP_BORDER_COLOR, clrBlack);
+   ObjectSetInteger(0, CHK_ENTRY_ZONE, OBJPROP_HIDDEN, true);
+   ObjectSetInteger(0, CHK_ENTRY_ZONE, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, CHK_ENTRY_ZONE, OBJPROP_STATE, false);
+
+   UpdateEntryZoneCheckbox();
+   return true;
+}
+
 void CreateControlPanel()
 {
    CreateButton(BTN_BUY,  "BUY AUTO",  15, 30, clrSeaGreen);
    CreateButton(BTN_SELL, "SELL AUTO", 145, 30, clrFireBrick);
+   CreateEntryZoneCheckbox(15, 65);
 }
 
 void DeleteControlPanel()
 {
    ObjectDelete(0, BTN_BUY);
    ObjectDelete(0, BTN_SELL);
+   ObjectDelete(0, CHK_ENTRY_ZONE);
 }
 
 //----------------------------------------------------
@@ -576,7 +615,7 @@ void OpenAutoTrade(bool isBuy)
       return;
    }
 
-   if(!IsNearWeeklyLevel(symbol, orderType, volume))
+   if(EntryZoneCheckEnabled && !IsNearWeeklyLevel(symbol, orderType, volume))
    {
       Print("Entry blocked: price is not within weekly level zone");
       return;
@@ -825,6 +864,12 @@ void OnChartEvent(const int id,
       {
          Print("SELL AUTO clicked");
          OpenAutoTrade(false);
+      }
+      else if(sparam == CHK_ENTRY_ZONE)
+      {
+         EntryZoneCheckEnabled = !EntryZoneCheckEnabled;
+         UpdateEntryZoneCheckbox();
+         Print("Entry zone check ", (EntryZoneCheckEnabled ? "enabled" : "disabled"));
       }
    }
 }
