@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Milad Trade Bridge</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; }
+    .wrap { max-width: 720px; margin: 32px auto; padding: 0 16px; }
+    h1 { font-size: 1.4rem; }
+    .tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 14px 0; }
+    .tab { background: #334155; border: 1px solid #475569; }
+    .tab.active { background: #22c55e; border-color: #22c55e; color: #06210f; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    button { padding: 12px; border: 0; border-radius: 8px; color: #fff; font-weight: 600; cursor: pointer; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .buy { background: #16a34a; } .sell { background: #dc2626; }
+    .sale { background: #ef4444; } .rescue { background: #f59e0b; }
+    .close50 { background: #3b82f6; } .close30 { background: #6366f1; }
+    .get100 { background: #059669; grid-column: span 2; }
+    .status { margin-top: 16px; padding: 10px; background: #1e293b; border-radius: 8px; }
+    small { color: #94a3b8; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>MiladTradeManager Local Buttons</h1>
+    <p><small>1) Pick your stack first. 2) Then use trade action buttons.</small></p>
+
+    <div id="tabs" class="tabs">
+      <button class="tab" data-stack="XAUUSD">XAUUSD</button>
+      <button class="tab" data-stack="XAGUSD">XAGUSD</button>
+      <button class="tab" data-stack="US30">US30</button>
+      <button class="tab" data-stack="US500">US500</button>
+      <button class="tab" data-stack="USTEC">USTEC</button>
+      <button class="tab" data-stack="NAS100">NAS100</button>
+    </div>
+
+    <div class="grid">
+      <button class="buy" data-command="buy" disabled>AUTO BUY</button>
+      <button class="sell" data-command="sell" disabled>AUTO SELL</button>
+      <button class="sale" data-command="sale" disabled>SALE</button>
+      <button class="rescue" data-command="rescue" disabled>RESCUE $10</button>
+      <button class="close50" data-command="close50" disabled>CLOSE 50%</button>
+      <button class="close30" data-command="close30" disabled>CLOSE 30%</button>
+      <button class="get100" data-command="get100" disabled>GET $100</button>
+    </div>
+
+    <div id="status" class="status">Status: waiting…</div>
+  </div>
+
+  <script>
+    const statusEl = document.getElementById('status');
+    const actionButtons = document.querySelectorAll('button[data-command]');
+    const stackTabs = document.querySelectorAll('button[data-stack]');
+    let selectedStack = '';
+
+    function setSelectedStack(stack) {
+      selectedStack = stack;
+      stackTabs.forEach((tab) => tab.classList.toggle('active', tab.dataset.stack === stack));
+      actionButtons.forEach((btn) => { btn.disabled = !selectedStack; });
+      statusEl.textContent = `Selected stack: ${selectedStack}. Ready to send commands.`;
+    }
+
+    async function sendCommand(command) {
+      if (!selectedStack) {
+        statusEl.textContent = 'Select a stack first.';
+        return;
+      }
+      statusEl.textContent = `Sending ${command}...`;
+      try {
+        const res = await fetch('/api/command', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command, stack: selectedStack }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) {
+          statusEl.textContent = `Error: ${data.error || 'Request failed'}`;
+          return;
+        }
+        statusEl.textContent = `Queued ${data.queued} for ${data.stack}`;
+      } catch (err) {
+        statusEl.textContent = `Connection error: ${err}`;
+      }
+    }
+
+    document.querySelectorAll('button[data-command]').forEach((btn) => {
+      btn.addEventListener('click', () => sendCommand(btn.dataset.command));
+    });
+
+    stackTabs.forEach((tab) => {
+      tab.addEventListener('click', () => setSelectedStack(tab.dataset.stack));
+    });
+  </script>
+</body>
+</html>

@@ -13,6 +13,9 @@ input double MaxMarginUsagePercent = 20.0;
 input bool   OnePositionPerSymbol  = true;
 input bool   DrawWeeklyLines       = true;
 input double RescueTargetUsd       = 10.0;
+input bool   EnableLocalWebBridge  = false;
+input string LocalBridgeUrl        = "http://127.0.0.1:8000/api/command/next";
+input int    BridgePollSeconds     = 1;
 
 //----------------------------------------------------
 // Button names
@@ -30,6 +33,8 @@ string BTN_GET100 = "MILAD_BTN_GET_100";
 //----------------------------------------------------
 string W1_PREFIX_1 = "W1_LAST_";
 string W1_PREFIX_2 = "W1_PREV_";
+
+datetime g_lastBridgePoll = 0;
 
 //----------------------------------------------------
 // Utility helpers
@@ -341,7 +346,20 @@ void DrawWeeklyLevels()
 //----------------------------------------------------
 void OpenAutoTrade(bool isBuy)
 {
-   string symbol = _Symbol;
+   OpenAutoTradeForSymbol(isBuy, _Symbol);
+}
+
+void OpenAutoTradeForSymbol(bool isBuy, string symbol)
+{
+   symbol = StringTrimLeft(StringTrimRight(symbol));
+   if(symbol == "")
+      symbol = _Symbol;
+
+   if(!SymbolSelect(symbol, true))
+   {
+      Print("OpenAutoTrade aborted: failed to select symbol ", symbol);
+      return;
+   }
 
    if(OnePositionPerSymbol && SymbolHasOpenPosition(symbol))
    {
@@ -509,7 +527,14 @@ bool ApplyRescueForSide(string symbol,
 
 void ApplyRescueMode()
 {
-   string symbol = _Symbol;
+   ApplyRescueModeForSymbol(_Symbol);
+}
+
+void ApplyRescueModeForSymbol(string symbol)
+{
+   symbol = StringTrimLeft(StringTrimRight(symbol));
+   if(symbol == "")
+      symbol = _Symbol;
 
    double buyVolume = 0.0;
    double sellVolume = 0.0;
@@ -578,7 +603,14 @@ void ApplyRescueMode()
 
 void SetTakeProfitForTargetUsd(double targetUsd)
 {
-   string symbol = _Symbol;
+   SetTakeProfitForTargetUsdForSymbol(targetUsd, _Symbol);
+}
+
+void SetTakeProfitForTargetUsdForSymbol(double targetUsd, string symbol)
+{
+   symbol = StringTrimLeft(StringTrimRight(symbol));
+   if(symbol == "")
+      symbol = _Symbol;
    if(targetUsd <= 0.0)
    {
       Print("SET TP aborted: invalid targetUsd=", targetUsd);
@@ -718,7 +750,14 @@ void SetTakeProfitForTargetUsd(double targetUsd)
 
 void ClosePartialByPercent(double percent)
 {
-   string symbol = _Symbol;
+   ClosePartialByPercentForSymbol(percent, _Symbol);
+}
+
+void ClosePartialByPercentForSymbol(double percent, string symbol)
+{
+   symbol = StringTrimLeft(StringTrimRight(symbol));
+   if(symbol == "")
+      symbol = _Symbol;
    if(percent <= 0.0 || percent >= 100.0)
    {
       Print("Partial close aborted: invalid percent=", percent);
@@ -778,6 +817,107 @@ void ClosePartialByPercent(double percent)
             " partiallyClosed=", closed, " percent=", percent);
 }
 
+string ExtractJsonValue(const string body, const string keyName)
+{
+   string key = "\"" + keyName + "\"";
+   int keyPos = StringFind(body, key);
+   if(keyPos < 0)
+      return "";
+
+   int colonPos = StringFind(body, ":", keyPos);
+   if(colonPos < 0)
+      return "";
+
+   int firstQuote = StringFind(body, "\"", colonPos + 1);
+   if(firstQuote < 0)
+      return "";
+
+   int secondQuote = StringFind(body, "\"", firstQuote + 1);
+   if(secondQuote < 0)
+      return "";
+
+   string value = StringSubstr(body, firstQuote + 1, secondQuote - firstQuote - 1);
+   value = StringTrimLeft(StringTrimRight(value));
+   return value;
+}
+
+bool FetchBridgeCommand(string &command, string &stack)
+{
+   command = "";
+   stack = "";
+   char response[];
+   char requestData[];
+   string responseHeaders;
+   int timeoutMs = 1000;
+
+   ResetLastError();
+   int statusCode = WebRequest("GET", LocalBridgeUrl, "", timeoutMs, requestData, response, responseHeaders);
+   if(statusCode == -1)
+   {
+      int err = GetLastError();
+      if(err != 4014)
+         Print("Web bridge request failed. error=", err);
+      return false;
+   }
+
+   if(statusCode != 200)
+   {
+      Print("Web bridge returned non-200 status: ", statusCode);
+      return false;
+   }
+
+   string body = CharArrayToString(response);
+   command = StringToLower(ExtractJsonValue(body, "command"));
+   stack = StringTrimLeft(StringTrimRight(ExtractJsonValue(body, "stack")));
+   return (command != "");
+}
+
+void ExecuteExternalCommand(const string rawCommand, const string rawStack)
+{
+   string command = StringToLower(StringTrimLeft(StringTrimRight(rawCommand)));
+   string symbol = StringTrimLeft(StringTrimRight(rawStack));
+   if(symbol == "")
+      symbol = _Symbol;
+
+   if(command == "")
+      return;
+
+   if(command == "buy")
+   {
+      Print("Local bridge command: BUY symbol=", symbol);
+      OpenAutoTradeForSymbol(true, symbol);
+   }
+   else if(command == "sell" || command == "sale")
+   {
+      Print("Local bridge command: SELL/SALE symbol=", symbol);
+      OpenAutoTradeForSymbol(false, symbol);
+   }
+   else if(command == "rescue")
+   {
+      Print("Local bridge command: RESCUE symbol=", symbol);
+      ApplyRescueModeForSymbol(symbol);
+   }
+   else if(command == "close50")
+   {
+      Print("Local bridge command: CLOSE 50% symbol=", symbol);
+      ClosePartialByPercentForSymbol(50.0, symbol);
+   }
+   else if(command == "close30")
+   {
+      Print("Local bridge command: CLOSE 30% symbol=", symbol);
+      ClosePartialByPercentForSymbol(30.0, symbol);
+   }
+   else if(command == "get100")
+   {
+      Print("Local bridge command: GET $100 symbol=", symbol);
+      SetTakeProfitForTargetUsdForSymbol(100.0, symbol);
+   }
+   else
+   {
+      Print("Unknown local bridge command: ", command);
+   }
+}
+
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
 //+------------------------------------------------------------------+
@@ -785,6 +925,11 @@ int OnInit()
 {
    CreateControlPanel();
    DrawWeeklyLevels();
+   if(EnableLocalWebBridge)
+   {
+      EventSetTimer(MathMax(1, BridgePollSeconds));
+      Print("Local web bridge enabled. Poll URL=", LocalBridgeUrl);
+   }
    ChartRedraw(0);
    Print("MiladTradeManager v3.02 initialized on symbol ", _Symbol);
    return(INIT_SUCCEEDED);
@@ -795,6 +940,7 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
+   EventKillTimer();
    DeleteControlPanel();
    Print("MiladTradeManager deinitialized. reason=", reason);
 }
@@ -806,6 +952,28 @@ void OnTick()
 {
    EnsureControlPanel();
    DrawWeeklyLevels();
+}
+
+//+------------------------------------------------------------------+
+//| Timer function                                                   |
+//+------------------------------------------------------------------+
+void OnTimer()
+{
+   if(!EnableLocalWebBridge)
+      return;
+
+   if(BridgePollSeconds <= 0)
+      return;
+
+   if((TimeCurrent() - g_lastBridgePoll) < BridgePollSeconds)
+      return;
+
+   g_lastBridgePoll = TimeCurrent();
+
+   string command = "";
+   string stack = "";
+   if(FetchBridgeCommand(command, stack))
+      ExecuteExternalCommand(command, stack);
 }
 
 //+------------------------------------------------------------------+
