@@ -1,7 +1,7 @@
 //+------------------------------------------------------------------+
 //|                                            MiladTradeManager.mq5 |
 //+------------------------------------------------------------------+
-#property version   "2.61"
+#property version   "2.62"
 
 #include <Trade/Trade.mqh>
 CTrade trade;
@@ -786,7 +786,9 @@ void ManageOnePosition(ulong ticket)
    if(initialTPPrice <= 0.0)
       initialTPPrice = FindPriceForTargetProfit(symbol, posType, volume, openPrice, stopLossUsd);
    double lockedSLPrice  = FindPriceForTargetProfit(symbol, posType, volume, openPrice,  LockedProfitUSD);
-   double rescueTPPrice  = FindPriceForTargetProfit(symbol, posType, volume, openPrice,  RescueTakeProfitUSD);
+   double rescueTPPrice  = ComputeWeeklyBasedTakeProfit(symbol, posType, volume, openPrice, WeeklyTPPullbackUSD);
+   if(rescueTPPrice <= 0.0)
+      rescueTPPrice = currentTP;
 
    if(currentSL == 0.0 || currentTP == 0.0)
    {
@@ -819,7 +821,9 @@ void ManageOnePosition(ulong ticket)
    currentProfit = PositionGetDouble(POSITION_PROFIT);
 
    lockedSLPrice = FindPriceForTargetProfit(symbol, posType, volume, openPrice, LockedProfitUSD);
-   rescueTPPrice = FindPriceForTargetProfit(symbol, posType, volume, openPrice, RescueTakeProfitUSD);
+   rescueTPPrice = ComputeWeeklyBasedTakeProfit(symbol, posType, volume, openPrice, WeeklyTPPullbackUSD);
+   if(rescueTPPrice <= 0.0)
+      rescueTPPrice = currentTP;
 
    if(currentProfit >= trailingStartUsd)
    {
