@@ -18,9 +18,14 @@ This repo now includes a local web bridge so you can select a stack (symbol) in 
 | `XAUUSD`, `XAGUSD`, `US30`, `US500`, `USTEC`, `NAS100` | `buy` | AUTO BUY |
 | `XAUUSD`, `XAGUSD`, `US30`, `US500`, `USTEC`, `NAS100` | `sell` / `sale` | AUTO SELL / SALE |
 | `XAUUSD`, `XAGUSD`, `US30`, `US500`, `USTEC`, `NAS100` | `rescue` | RESCUE $10 |
+| `XAUUSD`, `XAGUSD`, `US30`, `US500`, `USTEC`, `NAS100` | `closeall` | CLOSE ALL |
 | `XAUUSD`, `XAGUSD`, `US30`, `US500`, `USTEC`, `NAS100` | `close50` | CLOSE 50% |
 | `XAUUSD`, `XAGUSD`, `US30`, `US500`, `USTEC`, `NAS100` | `close30` | CLOSE 30% |
 | `XAUUSD`, `XAGUSD`, `US30`, `US500`, `USTEC`, `NAS100` | `get100` | GET $100 |
+
+`buy` / `sell` / `sale` can now include optional `lot` value from the web UI.
+If `lot` is blank, EA keeps the dynamic margin-based lot calculation.
+If `lot` is provided and valid, the EA uses that lot and allows opening an additional position on the same symbol.
 
 ## Run locally
 

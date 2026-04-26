@@ -31,6 +31,7 @@ COMMANDS = {
     "sell",
     "sale",
     "rescue",
+    "closeall",
     "close50",
     "close30",
     "get100",
@@ -72,9 +73,9 @@ def detect_lan_ip() -> str | None:
     return None
 
 
-def push_command(command: str, stack: str) -> None:
+def push_command(command: str, stack: str, lot: str = "", ticket: str = "") -> None:
     with queue_lock:
-        command_queue.append({"command": command, "stack": stack})
+        command_queue.append({"command": command, "stack": stack, "lot": lot, "ticket": ticket})
 
 
 def pop_command() -> dict[str, str]:
@@ -162,6 +163,8 @@ class Handler(BaseHTTPRequestHandler):
 
         command = str(body.get("command", "")).strip().lower()
         stack = str(body.get("stack", "")).strip().upper()
+        lot = str(body.get("lot", "")).strip()
+        ticket = str(body.get("ticket", "")).strip()
 
         if command not in COMMANDS:
             self._send_json(
@@ -177,8 +180,24 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
-        push_command(command, stack)
-        self._send_json({"ok": True, "queued": command, "stack": stack})
+        if lot:
+            try:
+                lot_value = float(lot)
+            except ValueError:
+                self._send_json(
+                    {"ok": False, "error": f"Invalid lot: {lot}"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+            if lot_value <= 0:
+                self._send_json(
+                    {"ok": False, "error": "Lot must be greater than zero"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+
+        push_command(command, stack, lot, ticket)
+        self._send_json({"ok": True, "queued": command, "stack": stack, "lot": lot, "ticket": ticket})
 
     def log_message(self, fmt: str, *args) -> None:
         return

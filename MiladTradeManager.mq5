@@ -24,6 +24,7 @@ string BTN_BUY    = "MILAD_BTN_BUY_AUTO";
 string BTN_SELL   = "MILAD_BTN_SELL_AUTO";
 string BTN_SALE   = "MILAD_BTN_SALE";
 string BTN_RESCUE = "MILAD_BTN_RESCUE";
+string BTN_CLOSEALL = "MILAD_BTN_CLOSE_ALL";
 string BTN_CLOSE50 = "MILAD_BTN_CLOSE_50";
 string BTN_CLOSE30 = "MILAD_BTN_CLOSE_30";
 string BTN_GET100 = "MILAD_BTN_GET_100";
@@ -35,6 +36,9 @@ string W1_PREFIX_1 = "W1_LAST_";
 string W1_PREFIX_2 = "W1_PREV_";
 
 datetime g_lastBridgePoll = 0;
+
+void OpenAutoTradeForSymbolWithLot(bool isBuy, string symbol, double lotOverride, bool bypassSinglePositionGuard);
+void CloseAllPositionsForSymbol(string symbol);
 
 //----------------------------------------------------
 // Utility helpers
@@ -268,16 +272,17 @@ void CreateControlPanel()
    CreateButton(BTN_SELL,   "AUTO SELL", 145, 30, clrFireBrick);
    CreateButton(BTN_SALE,   "SALE",       15, 64, clrIndianRed);
    CreateButton(BTN_RESCUE, "RESCUE $10", 145, 64, clrDarkOrange);
-   CreateButton(BTN_CLOSE50, "CLOSE 50%", 15, 98, clrSteelBlue);
-   CreateButton(BTN_CLOSE30, "CLOSE 30%", 145, 98, clrSlateBlue);
-   CreateButton(BTN_GET100, "GET $100",   15, 132, clrDarkGreen);
+   CreateButton(BTN_CLOSEALL, "CLOSE ALL", 15, 98, clrMediumVioletRed);
+   CreateButton(BTN_CLOSE50, "CLOSE 50%", 145, 98, clrSteelBlue);
+   CreateButton(BTN_CLOSE30, "CLOSE 30%", 15, 132, clrSlateBlue);
+   CreateButton(BTN_GET100, "GET $100",   145, 132, clrDarkGreen);
 }
 
 void EnsureControlPanel()
 {
    if(ObjectFind(0, BTN_BUY) < 0 || ObjectFind(0, BTN_SELL) < 0 ||
       ObjectFind(0, BTN_SALE) < 0 || ObjectFind(0, BTN_RESCUE) < 0 ||
-      ObjectFind(0, BTN_CLOSE50) < 0 || ObjectFind(0, BTN_CLOSE30) < 0 ||
+      ObjectFind(0, BTN_CLOSEALL) < 0 || ObjectFind(0, BTN_CLOSE50) < 0 || ObjectFind(0, BTN_CLOSE30) < 0 ||
       ObjectFind(0, BTN_GET100) < 0)
       CreateControlPanel();
 }
@@ -288,6 +293,7 @@ void DeleteControlPanel()
    ObjectDelete(0, BTN_SELL);
    ObjectDelete(0, BTN_SALE);
    ObjectDelete(0, BTN_RESCUE);
+   ObjectDelete(0, BTN_CLOSEALL);
    ObjectDelete(0, BTN_CLOSE50);
    ObjectDelete(0, BTN_CLOSE30);
    ObjectDelete(0, BTN_GET100);
@@ -349,7 +355,22 @@ void OpenAutoTrade(bool isBuy)
    OpenAutoTradeForSymbol(isBuy, _Symbol);
 }
 
+bool IsValidVolumeForSymbol(string symbol, double volume)
+{
+   if(volume <= 0.0)
+      return false;
+
+   double minLot  = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+   double maxLot  = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+   return (volume >= minLot && volume <= maxLot);
+}
+
 void OpenAutoTradeForSymbol(bool isBuy, string symbol)
+{
+   OpenAutoTradeForSymbolWithLot(isBuy, symbol, 0.0, false);
+}
+
+void OpenAutoTradeForSymbolWithLot(bool isBuy, string symbol, double lotOverride, bool bypassSinglePositionGuard)
 {
    StringTrimRight(symbol);
    StringTrimLeft(symbol);
@@ -362,7 +383,7 @@ void OpenAutoTradeForSymbol(bool isBuy, string symbol)
       return;
    }
 
-   if(OnePositionPerSymbol && SymbolHasOpenPosition(symbol))
+   if(OnePositionPerSymbol && !bypassSinglePositionGuard && SymbolHasOpenPosition(symbol))
    {
       Print("There is already an open position on ", symbol);
       return;
@@ -375,6 +396,15 @@ void OpenAutoTradeForSymbol(bool isBuy, string symbol)
    ENUM_POSITION_TYPE posType = isBuy ? POSITION_TYPE_BUY : POSITION_TYPE_SELL;
 
    double volume = CalculateMaxVolumeForMargin(symbol, orderType, maxMarginMoney);
+   if(lotOverride > 0.0)
+   {
+      volume = NormalizeVolumeBySymbol(symbol, lotOverride);
+      if(!IsValidVolumeForSymbol(symbol, volume))
+      {
+         Print("Invalid lot override for ", symbol, ". Requested=", lotOverride, " normalized=", volume);
+         return;
+      }
+   }
    if(volume <= 0.0)
    {
       Print("Could not calculate a valid volume for ", symbol);
@@ -418,6 +448,7 @@ void OpenAutoTradeForSymbol(bool isBuy, string symbol)
    Print("Opened ", (isBuy ? "BUY" : "SELL"),
          " symbol=", symbol,
          " volume=", volume,
+         " manualLot=", (lotOverride > 0.0 ? "true" : "false"),
          " maxMarginUsagePercent=", MaxMarginUsagePercent,
          " SL=", slPrice,
          " TP=", tpPrice);
@@ -846,10 +877,11 @@ string ExtractJsonValue(const string body, const string keyName)
    return value;
 }
 
-bool FetchBridgeCommand(string &command, string &stack)
+bool FetchBridgeCommand(string &command, string &stack, string &lotText)
 {
    command = "";
    stack = "";
+   lotText = "";
    char response[];
    char requestData[];
    string responseHeaders;
@@ -881,10 +913,13 @@ bool FetchBridgeCommand(string &command, string &stack)
    stack = ExtractJsonValue(body, "stack");
    StringTrimRight(stack);
    StringTrimLeft(stack);
+   lotText = ExtractJsonValue(body, "lot");
+   StringTrimRight(lotText);
+   StringTrimLeft(lotText);
    return (command != "");
 }
 
-void ExecuteExternalCommand(const string rawCommand, const string rawStack)
+void ExecuteExternalCommand(const string rawCommand, const string rawStack, const string rawLotText)
 {
    string command = rawCommand;
    StringTrimRight(command);
@@ -900,15 +935,26 @@ void ExecuteExternalCommand(const string rawCommand, const string rawStack)
    if(command == "")
       return;
 
+   double lotOverride = 0.0;
+   if(rawLotText != "")
+   {
+      lotOverride = StringToDouble(rawLotText);
+      if(lotOverride <= 0.0)
+      {
+         Print("Ignoring invalid lot override from bridge: ", rawLotText);
+         lotOverride = 0.0;
+      }
+   }
+
    if(command == "buy")
    {
       Print("Local bridge command: BUY symbol=", symbol);
-      OpenAutoTradeForSymbol(true, symbol);
+      OpenAutoTradeForSymbolWithLot(true, symbol, lotOverride, lotOverride > 0.0);
    }
    else if(command == "sell" || command == "sale")
    {
       Print("Local bridge command: SELL/SALE symbol=", symbol);
-      OpenAutoTradeForSymbol(false, symbol);
+      OpenAutoTradeForSymbolWithLot(false, symbol, lotOverride, lotOverride > 0.0);
    }
    else if(command == "rescue")
    {
@@ -919,6 +965,11 @@ void ExecuteExternalCommand(const string rawCommand, const string rawStack)
    {
       Print("Local bridge command: CLOSE 50% symbol=", symbol);
       ClosePartialByPercentForSymbol(50.0, symbol);
+   }
+   else if(command == "closeall")
+   {
+      Print("Local bridge command: CLOSE ALL symbol=", symbol);
+      CloseAllPositionsForSymbol(symbol);
    }
    else if(command == "close30")
    {
@@ -990,8 +1041,9 @@ void OnTimer()
 
    string command = "";
    string stack = "";
-   if(FetchBridgeCommand(command, stack))
-      ExecuteExternalCommand(command, stack);
+   string lotText = "";
+   if(FetchBridgeCommand(command, stack, lotText))
+      ExecuteExternalCommand(command, stack, lotText);
 }
 
 //+------------------------------------------------------------------+
@@ -1029,6 +1081,11 @@ void OnChartEvent(const int id,
          Print("CLOSE 50% clicked");
          ClosePartialByPercent(50.0);
       }
+      else if(sparam == BTN_CLOSEALL)
+      {
+         Print("CLOSE ALL clicked");
+         CloseAllPositionsForSymbol(_Symbol);
+      }
       else if(sparam == BTN_CLOSE30)
       {
          Print("CLOSE 30% clicked");
@@ -1042,3 +1099,38 @@ void OnChartEvent(const int id,
    }
 }
 //+------------------------------------------------------------------+
+void CloseAllPositionsForSymbol(string symbol)
+{
+   StringTrimRight(symbol);
+   StringTrimLeft(symbol);
+   if(symbol == "")
+      symbol = _Symbol;
+
+   int affected = 0;
+   int closed = 0;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+      if(!PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != symbol) continue;
+      affected++;
+
+      if(!trade.PositionClose(ticket))
+      {
+         Print("Close all failed. ticket=", ticket,
+               " retcode=", trade.ResultRetcode(),
+               " desc=", trade.ResultRetcodeDescription());
+         continue;
+      }
+
+      closed++;
+      Print("Close all success. ticket=", ticket, " symbol=", symbol);
+   }
+
+   if(affected == 0)
+      Print("Close all skipped: no open positions for ", symbol);
+   else
+      Print("Close all summary for ", symbol, ": affected=", affected, " closed=", closed);
+}
