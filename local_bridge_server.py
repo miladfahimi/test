@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import os
+import socket
+import sys
 from collections import deque
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -13,7 +15,6 @@ from threading import Lock
 from time import time
 
 HOST = os.getenv("BRIDGE_HOST", "127.0.0.1")
-PORT = 8000
 WEB_DIR = Path(__file__).with_name("web")
 
 STACKS = {
@@ -39,6 +40,36 @@ command_queue: deque[dict[str, str]] = deque()
 queue_lock = Lock()
 bridge_lock = Lock()
 last_bridge_poll_ts = 0.0
+
+
+def get_port() -> int:
+    raw_port = os.getenv("BRIDGE_PORT", "8000").strip()
+    try:
+        port = int(raw_port)
+    except ValueError:
+        print(f"Invalid BRIDGE_PORT='{raw_port}': expected an integer.", file=sys.stderr)
+        raise SystemExit(2)
+
+    if not (1 <= port <= 65535):
+        print(f"Invalid BRIDGE_PORT='{raw_port}': expected 1-65535.", file=sys.stderr)
+        raise SystemExit(2)
+    return port
+
+
+def detect_lan_ip() -> str | None:
+    """Best-effort local LAN IP detection for startup hints."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # No packets are sent, but connect helps select the outbound interface.
+        sock.connect(("8.8.8.8", 80))
+        ip = sock.getsockname()[0]
+        if ip and not ip.startswith("127."):
+            return ip
+    except OSError:
+        return None
+    finally:
+        sock.close()
+    return None
 
 
 def push_command(command: str, stack: str) -> None:
@@ -154,13 +185,23 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"Local bridge server running on http://{HOST}:{PORT}")
+    port = get_port()
+    server = ThreadingHTTPServer((HOST, port), Handler)
+    print(f"Local bridge server running on http://{HOST}:{port}")
     if HOST == "0.0.0.0":
-        print("Open the UI from this PC at http://127.0.0.1:8000/")
-        print("Open the UI from your phone at http://<your-pc-lan-ip>:8000/")
+        print(f"Open the UI from this PC at http://127.0.0.1:{port}/")
+        lan_ip = detect_lan_ip()
+        if lan_ip:
+            print(f"Open the UI from your phone at http://{lan_ip}:{port}/")
+            print(f"Quick local test: curl http://{lan_ip}:{port}/api/status")
+        else:
+            print(f"Open the UI from your phone at http://<your-pc-lan-ip>:{port}/")
+        print(f"Verify listen socket: ss -ltnp | grep {port}")
+        print(
+            "If phone still times out: allow inbound TCP on this port in firewall and disable AP/client isolation on Wi-Fi."
+        )
     else:
-        print(f"Open the UI at http://{HOST}:{PORT}/")
+        print(f"Open the UI at http://{HOST}:{port}/")
     server.serve_forever()
 
 

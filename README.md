@@ -36,7 +36,14 @@ To access from your phone on the same Wi‑Fi, bind to all interfaces:
 BRIDGE_HOST=0.0.0.0 python3 local_bridge_server.py
 ```
 
+You can also change the port if needed:
+
+```bash
+BRIDGE_HOST=0.0.0.0 BRIDGE_PORT=8000 python3 local_bridge_server.py
+```
+
 Then open `http://<your-pc-lan-ip>:8000/` on the phone.
+The server startup logs now try to print the detected LAN IP and a ready-to-run `curl` check URL.
 
 2. Open the page:
 
@@ -73,3 +80,5 @@ The web status panel now warns when EA polling is not detected recently, which u
 - Commands are queued in-memory by the Python process.
 - Restarting the Python server clears any pending queued commands.
 - Each queued command now includes both `command` and `stack` so the EA knows which symbol to trade/manage.
+- If phone access times out, check the listen address with `ss -ltnp | grep 8000`; it should show `0.0.0.0:8000` (or your LAN IP), not `127.0.0.1:8000`.
+- If it still times out, allow inbound TCP on that port in your OS firewall and ensure your Wi‑Fi/router does not have AP/client isolation enabled.
