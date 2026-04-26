@@ -1,31 +1,471 @@
 <!doctype html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Milad Trade Bridge</title>
   <style>
-    body { font-family: Arial, sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; }
-    .wrap { max-width: 720px; margin: 32px auto; padding: 0 16px; }
-    h1 { font-size: 1.4rem; }
-    .tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 14px 0; }
-    .tab { background: #334155; border: 1px solid #475569; }
-    .tab.active { background: #22c55e; border-color: #22c55e; color: #06210f; }
-    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-    button { padding: 12px; border: 0; border-radius: 8px; color: #fff; font-weight: 600; cursor: pointer; }
-    button:disabled { opacity: 0.45; cursor: not-allowed; }
-    .buy { background: #16a34a; } .sell { background: #dc2626; }
-    .sale { background: #ef4444; } .rescue { background: #f59e0b; }
-    .close50 { background: #3b82f6; } .close30 { background: #6366f1; }
-    .get100 { background: #059669; grid-column: span 2; }
-    .status { margin-top: 16px; padding: 10px; background: #1e293b; border-radius: 8px; }
-    small { color: #94a3b8; }
+    :root {
+      --bg: #e9ecf5;
+      --panel: #eef1f9;
+      --panel-pressed: #e4e7f1;
+      --text: #6b6fa8;
+      --text-strong: #5b5fa0;
+      --muted: #a4a8c9;
+
+      /* Flat neumorphism: surface is one solid color, only the edges create depth */
+      --shadow-out: 10px 10px 20px #cfd3e2, -10px -10px 20px #ffffff;
+      --shadow-pressed: inset 3px 3px 5px #c8ccdc, inset -1px -1px 2px rgba(255, 255, 255, .35);
+      --shadow-disabled: inset 1px 1px 3px #d5d9e8;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      height: 100vh;
+      margin: 0;
+      padding: 60px;
+      font-family: Inter, system-ui;
+      background: var(--bg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    .wrap {
+      width: min(760px, 100%);
+      height: calc(100vh - 120px);
+      padding: 60px;
+      border-radius: 30px;
+      background: var(--panel);
+      box-shadow: var(--shadow-out);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .hero {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .badge {
+      padding: 8px 14px;
+      border-radius: 999px;
+      background: var(--panel);
+      box-shadow: var(--shadow-out);
+      color: var(--text-strong);
+      font-size: .72rem;
+      font-weight: 850;
+    }
+
+    h1 {
+      margin: 8px 0 0;
+      font-size: 1.4rem;
+      color: var(--text-strong);
+    }
+
+    .subtitle {
+      margin: .35rem 0 0;
+      font-size: .8rem;
+      color: var(--muted);
+    }
+
+    .mini-card {
+      padding: 10px 14px;
+      border-radius: 18px;
+      background: var(--panel-pressed);
+      box-shadow: var(--shadow-pressed);
+      font-size: .8rem;
+      color: var(--text);
+    }
+
+    .mini-card span {
+      display: block;
+      color: var(--muted);
+      font-size: .68rem;
+      margin-bottom: 3px;
+    }
+
+    .mini-card strong {
+      color: var(--text-strong);
+    }
+
+    .section-title {
+      font-size: .7rem;
+      color: var(--muted);
+      font-weight: 800;
+      margin-top: 6px;
+    }
+
+    .tabs {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 8px;
+    }
+
+    button {
+      position: relative;
+      border: 0;
+      border-radius: 999px;
+      background: var(--panel);
+      box-shadow: var(--shadow-out);
+      color: var(--text);
+      font-weight: 800;
+      font-size: .8rem;
+      cursor: pointer;
+      height: 38px;
+      transition: box-shadow .12s ease, transform .12s ease, background .12s ease;
+    }
+
+    .tabs button {
+      padding-left: 0;
+    }
+
+    .grid button {
+      padding-left: 28px;
+      border-radius: 22px;
+      /* fixed corner curve for taller buttons */
+    }
+
+    /* LED indicator: only for trade action buttons */
+    .grid button::before {
+      content: "";
+      position: absolute;
+      left: 12px;
+      top: 13px;
+      transform: none;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #cfd3e2;
+      box-shadow: inset 1px 1px 2px #ffffff, inset -1px -1px 2px #c8ccdc;
+    }
+
+    .grid button::after {
+      content: "";
+      position: absolute;
+      left: 10px;
+      top: 11px;
+      transform: none;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      opacity: .25;
+      filter: blur(3px);
+    }
+
+    /* active (clicked) LED boost — brighter + tiny core */
+    .grid button.active-led::after {
+      opacity: 1;
+      filter: blur(7px);
+      transform: none;
+      background: var(--led-color);
+      box-shadow: 0 0 10px var(--led-color);
+    }
+
+    .grid button.active-led::before {
+      /* stronger colored LED core while clicked */
+      background: radial-gradient(circle at 50% 50%,
+          rgba(255, 255, 255, .98) 0 1px,
+          var(--led-color-strong) 2px 4px,
+          var(--led-color) 5px 100%);
+      box-shadow:
+        inset 1px 1px 2px rgba(255, 255, 255, .9),
+        inset -1px -1px 2px rgba(120, 130, 160, .28),
+        0 0 8px var(--led-color),
+        0 0 14px var(--led-color),
+        0 0 0 2px color-mix(in srgb, var(--led-color) 35%, transparent);
+    }
+
+    .buy {
+      --led-color: #8fe2ae;
+      --led-color-strong: #38c76f;
+    }
+
+    .buy::before {
+      background: #9fd8b5;
+    }
+
+    .buy::after {
+      background: #9fd8b5;
+    }
+
+    .sell {
+      --led-color: #e4949e;
+      --led-color-strong: #cf4658;
+    }
+
+    .sell::before {
+      background: #d9a3a8;
+    }
+
+    .sell::after {
+      background: #d9a3a8;
+    }
+
+    .sale {
+      --led-color: #ee8e98;
+      --led-color-strong: #dd3f52;
+    }
+
+    .sale::before {
+      background: #e2a1a6;
+    }
+
+    .sale::after {
+      background: #e2a1a6;
+    }
+
+    .rescue {
+      --led-color: #8edbd6;
+      --led-color-strong: #36bcb3;
+    }
+
+    .rescue::before {
+      background: #a8d3d0;
+    }
+
+    .rescue::after {
+      background: #a8d3d0;
+    }
+
+    .close50 {
+      --led-color: #9eb4ec;
+      --led-color-strong: #5475d6;
+    }
+
+    .close50::before {
+      background: #b5c2e3;
+    }
+
+    .close50::after {
+      background: #b5c2e3;
+    }
+
+    .close30 {
+      --led-color: #b3a8ee;
+      --led-color-strong: #7562d8;
+    }
+
+    .close30::before {
+      background: #c2bde6;
+    }
+
+    .close30::after {
+      background: #c2bde6;
+    }
+
+    .get100 {
+      --led-color: #92afea;
+      --led-color-strong: #3f6fd4;
+    }
+
+    .get100::before {
+      background: #9fb7e0;
+    }
+
+    .get100::after {
+      background: #9fb7e0;
+    }
+
+    button:active,
+    .tab.active {
+      background: var(--panel-pressed);
+      box-shadow: var(--shadow-pressed);
+      transform: translateY(1px);
+    }
+
+    button:disabled {
+      background: var(--panel);
+      color: #c2c6df;
+      box-shadow: var(--shadow-disabled);
+      cursor: not-allowed;
+    }
+
+    .tab.active {
+      color: var(--text-strong);
+    }
+
+    .grid {
+      flex: 1;
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      grid-template-rows: repeat(4, minmax(46px, 1fr));
+      row-gap: 18px;
+      column-gap: 18px;
+    }
+
+    .grid button {
+      width: 100%;
+      height: 100%;
+      min-height: 0;
+      max-height: none;
+      font-size: .85rem;
+      border-radius: 22px;
+    }
+
+    .get100 {
+      grid-column: span 2;
+    }
+
+    .status {
+      font-size: .75rem;
+      padding: 10px;
+      border-radius: 16px;
+      background: var(--panel-pressed);
+      box-shadow: var(--shadow-pressed);
+      color: var(--text);
+    }
+
+    @media(max-width:700px) {
+      body {
+        padding: 28px;
+      }
+
+      .wrap {
+        height: calc(100vh - 56px);
+        padding: 34px;
+        width: 100%;
+      }
+
+      .tabs {
+        grid-template-columns: repeat(3, 1fr);
+      }
+    }
+
+    @media(max-width:480px) {
+      body {
+        padding: 16px;
+      }
+
+      .wrap {
+        height: calc(100vh - 32px);
+        width: 100%;
+        padding: 22px 16px;
+        border-radius: 24px;
+      }
+
+      .hero {
+        align-items: flex-start;
+        gap: 10px;
+      }
+
+      .tabs {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        row-gap: 16px;
+        column-gap: 16px;
+      }
+
+      .tabs button {
+        width: 100%;
+        min-width: 0;
+        height: 36px;
+        font-size: .72rem;
+        padding-left: 0;
+      }
+
+      .grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-rows: repeat(4, minmax(40px, 1fr));
+        row-gap: 12px;
+        column-gap: 12px;
+      }
+
+      .grid button {
+        height: 100%;
+        min-height: 0;
+        max-height: none;
+        font-size: .78rem;
+        padding-left: 26px;
+        border-radius: 20px;
+      }
+
+      .get100 {
+        grid-column: span 2;
+      }
+
+      .status {
+        font-size: .7rem;
+        padding: 8px;
+        word-break: break-word;
+      }
+    }
+
+    @media(max-width:360px) {
+      body {
+        padding: 10px;
+      }
+
+      .wrap {
+        height: calc(100vh - 20px);
+        padding: 18px 12px;
+        border-radius: 22px;
+      }
+
+      .tabs {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        row-gap: 10px;
+        column-gap: 10px;
+      }
+
+      .tabs button {
+        height: 34px;
+        font-size: .66rem;
+      }
+
+      .grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-rows: repeat(4, minmax(38px, 1fr));
+        row-gap: 10px;
+        column-gap: 10px;
+      }
+
+      .grid button {
+        height: 100%;
+        min-height: 0;
+        max-height: none;
+        font-size: .74rem;
+        border-radius: 18px;
+      }
+
+      .grid button::before {
+        left: 9px;
+        top: 11px;
+        width: 6px;
+        height: 6px;
+      }
+
+      .grid button::after {
+        left: 7px;
+        top: 9px;
+        width: 10px;
+        height: 10px;
+      }
+    }
   </style>
 </head>
+
 <body>
   <div class="wrap">
-    <h1>MiladTradeManager Local Buttons</h1>
-    <p><small>1) Pick your stack first. 2) Then use trade action buttons.</small></p>
+    <div class="hero">
+      <div>
+        <div class="badge">Local Trade Bridge</div>
+        <h1>Milad Trade Manager</h1>
+        <p class="subtitle">1) Pick your stack first. 2) Then use trade action buttons.</p>
+      </div>
+      <div class="mini-card">
+        <span>Selected Stack</span>
+        <strong id="selectedLabel">None</strong>
+      </div>
+    </div>
+
+    <div class="section-title">Choose market stack</div>
 
     <div id="tabs" class="tabs">
       <button class="tab" data-stack="XAUUSD">XAUUSD</button>
@@ -35,6 +475,8 @@
       <button class="tab" data-stack="USTEC">USTEC</button>
       <button class="tab" data-stack="NAS100">NAS100</button>
     </div>
+
+    <div class="section-title">Trade actions</div>
 
     <div class="grid">
       <button class="buy" data-command="buy" disabled>AUTO BUY</button>
@@ -51,6 +493,7 @@
 
   <script>
     const statusEl = document.getElementById('status');
+    const selectedLabel = document.getElementById('selectedLabel');
     const actionButtons = document.querySelectorAll('button[data-command]');
     const stackTabs = document.querySelectorAll('button[data-stack]');
     let selectedStack = '';
@@ -63,8 +506,12 @@
 
     function setSelectedStack(stack) {
       selectedStack = stack;
+      selectedLabel.textContent = stack;
       stackTabs.forEach((tab) => tab.classList.toggle('active', tab.dataset.stack === stack));
-      actionButtons.forEach((btn) => { btn.disabled = !selectedStack; });
+      actionButtons.forEach((btn) => {
+        btn.disabled = !selectedStack;
+        btn.classList.remove('active-led');
+      });
       setStatus(`Selected stack: ${selectedStack}. Ready to send commands.`);
     }
 
@@ -73,6 +520,12 @@
         setStatus('Select a stack first.', true);
         return;
       }
+
+      // highlight clicked button
+      actionButtons.forEach(b => b.classList.remove('active-led'));
+      const btn = document.querySelector(`button[data-command="${command}"]`);
+      if (btn) btn.classList.add('active-led');
+
       setStatus(`Sending ${command}...`);
       try {
         const res = await fetch('/api/command', {
@@ -80,17 +533,26 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ command, stack: selectedStack }),
         });
+
         const data = await res.json();
+
         if (!res.ok || !data.ok) {
           setStatus(`Error: ${data.error || 'Request failed'}`, true);
+          actionButtons.forEach(b => b.classList.remove('active-led'));
           return;
         }
+
         const hint = lastBridgeConnected
           ? 'EA is connected and polling.'
           : 'Warning: EA has not polled recently. Check MT5 WebRequest whitelist + EnableLocalWebBridge.';
+
         setStatus(`Queued ${data.queued} for ${data.stack}. ${hint}`, !lastBridgeConnected);
       } catch (err) {
         setStatus(`Connection error: ${err}`, true);
+      } finally {
+        setTimeout(() => {
+          actionButtons.forEach(b => b.classList.remove('active-led'));
+        }, 800);
       }
     }
 
@@ -99,6 +561,7 @@
         const res = await fetch('/api/status');
         const data = await res.json();
         if (!res.ok || !data.ok) return;
+
         lastBridgeConnected = Boolean(data.bridge_connected);
 
         if (!selectedStack) {
@@ -113,11 +576,11 @@
           }
         }
       } catch (_err) {
-        // Ignore temporary polling failures to avoid flickering status while user interacts.
+        // ignore
       }
     }
 
-    document.querySelectorAll('button[data-command]').forEach((btn) => {
+    actionButtons.forEach((btn) => {
       btn.addEventListener('click', () => sendCommand(btn.dataset.command));
     });
 
@@ -129,4 +592,5 @@
     setInterval(refreshBridgeStatus, 2000);
   </script>
 </body>
+
 </html>
